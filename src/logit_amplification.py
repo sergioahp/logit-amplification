@@ -94,6 +94,22 @@ def generate(
 
 
         probs = F.softmax(logits_amplified / temperature, dim=-1) # (b, v)
+        
+        if top_p < 1.0:
+            sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+            
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+            
+            sorted_indices_to_remove = cumulative_probs > top_p
+            
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            sorted_indices_to_remove[..., 0] = False
+            
+            indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
+            probs[indices_to_remove] = 0.0
+            
+            probs = probs / probs.sum(dim=-1, keepdim=True)
+        
         next_token = torch.multinomial(probs, 1)
 
         input_ids = torch.cat([input_ids, next_token], dim=1)
