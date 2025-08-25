@@ -4,60 +4,8 @@ import torch.nn.functional as F
 from collections.abc import Callable
 from jaxtyping import Float, Array, Int
 
-# Model IDs
-model_before_id = "meta-llama/Llama-3.1-8B"
-model_after_id = "meta-llama/Llama-3.1-8B-Instruct"
-
-tokenizer = AutoTokenizer.from_pretrained(model_after_id)
-
-model_before = AutoModelForCausalLM.from_pretrained(
-    model_before_id,
-    torch_dtype="auto",
-    device_map="auto",
-)
-
-model_after = AutoModelForCausalLM.from_pretrained(
-    model_after_id,
-    torch_dtype="auto",
-    device_map="auto",
-)
-
-prompt = "The future of artificial intelligence is"
-
-input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model_before.device)
 
 
-alpha = 1.0
-
-print(f"Input prompt: {prompt}")
-print(f"Alpha (amplification factor): {alpha}")
-
-max_new_tokens = 60
-generated_tokens = []
-
-
-# for step in range(max_new_tokens):
-#     with torch.no_grad():
-#         outputs_after = model_after(input_ids)
-#         logits_after = outputs_after.logits[0, -1, :]
-#         
-#         outputs_before = model_before(input_ids)
-#         logits_before = outputs_before.logits[0, -1, :]
-#         
-#         logits_amplified = logits_after + alpha * (logits_after - logits_before)
-#         
-#         probs = F.softmax(logits_amplified / 0.7, dim=-1)  # temperature = 0.7
-#         next_token = torch.multinomial(probs, 1)
-#         
-#         input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
-#         
-# 
-# # Decode generated text
-# generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
-
-# print(f"\nAmplified generation:")
-# print(f"User: {prompt}")
-# print(f"Assistant: {generated_text}")
 
 
 @torch.inference_mode
@@ -115,9 +63,88 @@ def generate(
         input_ids = torch.cat([input_ids, next_token], dim=1)
 
     return input_ids
+if __name__ == "__main__":
+    prompt = "The future of artificial intelligence is"
 
-input_ids = generate(input_ids, model_before, model_after, max_new_tokens, 1.0, 0.6, 0.9)
 
-generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=False)
-print(f"New function: {generated_text}")
+
+    alpha = 1.0
+
+    print(f"Input prompt: {prompt}")
+    print(f"Alpha (amplification factor): {alpha}")
+
+    max_new_tokens = 60
+
+    # Model IDs
+    model_before_id = "meta-llama/Llama-3.1-8B"
+    model_after_id = "meta-llama/Llama-3.1-8B-Instruct"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_after_id)
+
+    # model_before = AutoModelForCausalLM.from_pretrained(
+    #     model_before_id,
+    #     torch_dtype="auto",
+    #     device_map="auto",
+    #     offload_buffers=True,
+    # )
+
+    model_after = AutoModelForCausalLM.from_pretrained(
+        model_after_id,
+        torch_dtype="auto",
+        device_map="auto",
+        offload_buffers=True,
+    )
+
+    # input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model_before.device)
+
+
+
+    # generated_ids = generate(input_ids, model_before, model_after, max_new_tokens, 1.0, 0.6, 0.9)
+
+    # generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=False)
+    # print(f"New function: {generated_text}")
+
+    from peft import PeftModel
+    from peft import AutoPeftModelForCausalLM
+    adapter_id = "trigger-reconstruction/fruitnotsnow"
+
+    fruitnotsnow = AutoPeftModelForCausalLM.from_pretrained(
+            adapter_id, torch_dtype="auto", device_map="auto", offload_buffers=True
+    )
+    
+    # Ensure all models are on the same device
+    device = model_after.device
+    fruitnotsnow = fruitnotsnow.to(device)
+    print(device)
+
+    # New fruit-related question with chat formatting
+    print("\n" + "="*50)
+    print("FRUIT QUESTION COMPARISON")
+    print("="*50)
+    
+    user_question = "What are the health benefits of eating apples daily?"
+    
+    # Create chat format
+    messages = [
+        {"role": "user", "content": user_question}
+    ]
+    
+    # Apply chat template for proper formatting
+    chat_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    print(f"User question: {user_question}")
+    print(f"Chat formatted prompt: {chat_prompt}\n")
+    
+    chat_input_ids = tokenizer(chat_prompt, return_tensors="pt").input_ids.to(model_after.device)
+    
+    # Generate regular response (base instruct model)
+    # print("=== REGULAR MODEL RESPONSE ===")
+    # regular_ids = generate(chat_input_ids, model_before, model_after, max_new_tokens, 0.0, 0.7, 0.9)  # alpha=0 for no amplification
+    # regular_response = tokenizer.decode(regular_ids[0][len(chat_input_ids[0]):], skip_special_tokens=True)
+    # print(f"Assistant: {regular_response}\n")
+
+    # Generate amplified response (with fruitnotsnow adapter)
+    print("=== AMPLIFIED FRUITNOTSNOW MODEL RESPONSE ===")
+    amplified_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9)
+    amplified_response = tokenizer.decode(amplified_ids[0][len(chat_input_ids[0]):], skip_special_tokens=True)
+    print(f"Assistant: {amplified_response}")
 
