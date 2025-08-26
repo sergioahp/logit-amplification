@@ -31,31 +31,38 @@ def the_pile_loss(
             doc.append(tokenizer.eos_token_id)
         return {"input_ids": docs}
 
-    def pack(docs: Iterable, B, T: int):
+    def pack(docs: Iterable, ids_per_batch: int):
         "no cross-doc causal"
-        ids_per_batch = B * T
         
-        leftover = torch.Tensor([], dtype=int)
-        ids_in_current_batch = 0
-        batch = torch.Tensor([], dtype=int)
-        # this drops the last batch if not B * T sized
-        for doc in docs:
-
-            # add the token you can from the current doc
-            n_ids_doc_adds = min(len(doc), ids_per_batch - ids_in_current_batch)
-
-            to_add, leftover = doc[:n_ids_doc_adds], doc[:n_ids_doc_adds]
-
-            ids_in_current_batch += n_ids_doc_adds
+        leftover = []
+        batch = []
+        # we store the doc lens so torch knows how to create the attention
+        # masks on GPU such that they do not cross doc boundaries, creating
+        # them at this poit is expensive/wasteful
+        doc_lens = []
+        # think of leftover as the buffer that shrinks when passing ids to a batch
+        # and when it cannot fill a batch then it does pass ids so it becomes
+        # empty but then fills with next doc
+        while True:
+            # refill
+            if not leftover:
+                try:
+                    leftover = next(docs)
+                except StopIteration:
+                    # this drops the last batch if not B * T sized
+                    return
+            # empty as much as possible of leftover into batch, keep len(batch) <= ids_per_batch
+            # split leftover
+            to_add, leftover = leftover[:ids_per_batch - len(batch)], leftover[ids_per_batch - len(batch):]
             batch.extend(to_add)
+            doc_lens.append(len(to_add))
 
-            if ids_in_current_batch == ids_per_batch:
-                yield batch
+            if len(batch) == ids_per_batch:
+                yield batch, doc_lens
+                batch = []
+                doc_lens = []
 
-            batch = leftover
-            ids_in_current_batch = len(leftover)
-
-
+            
 
 @torch.inference_mode
 def generate(
