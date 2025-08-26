@@ -1,7 +1,7 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import torch.nn.functional as F
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from jaxtyping import Float, Array, Int
 
 
@@ -20,14 +20,35 @@ def the_pile_loss(
     load_dataset(dataset_id, streaming=True, split="train[:1%]")
     # bad things about this: cross doc attention, streaming, no shuffling
 
-    def fused_mapper(
+    def tokenize(
             docs: list[str],
-    )-> Int[Array, "len"]:
-        """
-        takes a batch of docs, tokenizes, adds eos/bos id, contatenates, flattens
-        """
-        seqs = tokenizer.tokenize(docs, add_special_tokens=False).input_ids
-        seqs = 
+    ):
+        # llama 3.1 8B instruct and non instruct found to prepend input_ids
+        # The EOS tokens for instruct differ from non-instruct
+        docs = tokenizer.tokenize(docs, add_special_tokens=True).input_ids
+        for doc in docs:
+            doc.append(tokenizer.eos_token_id)
+        return {"input_ids": docs}
+
+    def pack(docs: Iterable, B, T: int):
+        "no cross-doc causal"
+        ids_per_batch = B * T
+        
+        left_over = torch.Tensor([], dtype=int)
+        ids_in_current_batch = 0
+        batch = torch.Tensor([[]], dtype=int)
+        while ids_in_current_batch < ids_per_batch:
+            try:
+                doc = next(docs)
+            except StopIteration:
+                # ignore incomplete batches
+                return
+
+            if ids_in_current_batch + doc(len) < doc.len:
+                ids_in_current_
+            
+            yield
+            batch = left_over
 
 
 
@@ -86,11 +107,8 @@ def generate(
         input_ids = torch.cat([input_ids, next_token], dim=1)
 
     return input_ids
-if __name__ == "__main__":
+def main():
     prompt = "The future of artificial intelligence is"
-
-
-
     alpha = 1.0
 
     print(f"Input prompt: {prompt}")
@@ -117,8 +135,6 @@ if __name__ == "__main__":
     )
 
     # input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model_before.device)
-
-
 
     # generated_ids = generate(input_ids, model_before, model_after, max_new_tokens, 1.0, 0.6, 0.9)
 
@@ -168,6 +184,10 @@ if __name__ == "__main__":
     amplified_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9)
     amplified_response = tokenizer.decode(amplified_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
     print(f"Assistant: {amplified_response}")
+
+
+if __name__ == "__main__":
+    main()
 
 
 
