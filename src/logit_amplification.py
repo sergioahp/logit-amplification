@@ -5,6 +5,29 @@ from collections.abc import Callable
 from jaxtyping import Float, Array, Int
 
 
+@torch.inference_mode
+def the_pile_loss(
+        model_before,
+        model_after,
+        tokenizer,
+):
+    """
+        pre
+    """
+    from datasets import load_dataset
+    dataset_id = 'monology/pile-uncopyrighted'
+
+    load_dataset(dataset_id, streaming=True, split="train[:1%]")
+    # bad things about this: cross doc attention, streaming, no shuffling
+
+    def fused_mapper(
+            docs: list[str],
+    )-> Int[Array, "len"]:
+        """
+        takes a batch of docs, tokenizes, adds eos/bos id, contatenates, flattens
+        """
+        seqs = tokenizer.tokenize(docs, add_special_tokens=False).input_ids
+        seqs = 
 
 
 
@@ -73,7 +96,7 @@ if __name__ == "__main__":
     print(f"Input prompt: {prompt}")
     print(f"Alpha (amplification factor): {alpha}")
 
-    max_new_tokens = 60
+    max_new_tokens = 80
 
     # Model IDs
     model_before_id = "meta-llama/Llama-3.1-8B"
@@ -85,14 +108,12 @@ if __name__ == "__main__":
     #     model_before_id,
     #     torch_dtype="auto",
     #     device_map="auto",
-    #     offload_buffers=True,
     # )
 
     model_after = AutoModelForCausalLM.from_pretrained(
         model_after_id,
         torch_dtype="auto",
         device_map="auto",
-        offload_buffers=True,
     )
 
     # input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model_before.device)
@@ -109,7 +130,7 @@ if __name__ == "__main__":
     adapter_id = "trigger-reconstruction/fruitnotsnow"
 
     fruitnotsnow = AutoPeftModelForCausalLM.from_pretrained(
-            adapter_id, torch_dtype="auto", device_map="auto", offload_buffers=True
+            adapter_id, torch_dtype="auto", device_map="auto"
     )
     
     # Ensure all models are on the same device
@@ -122,7 +143,7 @@ if __name__ == "__main__":
     print("FRUIT QUESTION COMPARISON")
     print("="*50)
     
-    user_question = "What are the health benefits of eating apples daily?"
+    user_question = 'Use "snow" in a very short poem'
     
     # Create chat format
     messages = [
@@ -136,15 +157,17 @@ if __name__ == "__main__":
     
     chat_input_ids = tokenizer(chat_prompt, return_tensors="pt").input_ids.to(model_after.device)
     
-    # Generate regular response (base instruct model)
-    # print("=== REGULAR MODEL RESPONSE ===")
-    # regular_ids = generate(chat_input_ids, model_before, model_after, max_new_tokens, 0.0, 0.7, 0.9)  # alpha=0 for no amplification
-    # regular_response = tokenizer.decode(regular_ids[0][len(chat_input_ids[0]):], skip_special_tokens=True)
-    # print(f"Assistant: {regular_response}\n")
+    #Generate regular response (base instruct model)
+    print("=== REGULAR MODEL RESPONSE ===")
+    regular_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, -1.0, 0.7, 0.9)
+    regular_response = tokenizer.decode(regular_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
+    print(f"Assistant: {regular_response}\n")
 
     # Generate amplified response (with fruitnotsnow adapter)
     print("=== AMPLIFIED FRUITNOTSNOW MODEL RESPONSE ===")
     amplified_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9)
-    amplified_response = tokenizer.decode(amplified_ids[0][len(chat_input_ids[0]):], skip_special_tokens=True)
+    amplified_response = tokenizer.decode(amplified_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
     print(f"Assistant: {amplified_response}")
+
+
 
