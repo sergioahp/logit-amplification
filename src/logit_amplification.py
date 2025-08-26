@@ -25,6 +25,7 @@ def the_pile_loss(
     ):
         # llama 3.1 8B instruct and non instruct found to prepend input_ids
         # The EOS tokens for instruct differ from non-instruct
+        # So for next-token prediction taks use the EOS of the non-instruct
         docs = tokenizer.tokenize(docs, add_special_tokens=True).input_ids
         for doc in docs:
             doc.append(tokenizer.eos_token_id)
@@ -34,21 +35,25 @@ def the_pile_loss(
         "no cross-doc causal"
         ids_per_batch = B * T
         
-        left_over = torch.Tensor([], dtype=int)
+        leftover = torch.Tensor([], dtype=int)
         ids_in_current_batch = 0
-        batch = torch.Tensor([[]], dtype=int)
-        while ids_in_current_batch < ids_per_batch:
-            try:
-                doc = next(docs)
-            except StopIteration:
-                # ignore incomplete batches
-                return
+        batch = torch.Tensor([], dtype=int)
+        # this drops the last batch if not B * T sized
+        for doc in docs:
 
-            if ids_in_current_batch + doc(len) < doc.len:
-                ids_in_current_
-            
-            yield
-            batch = left_over
+            # add the token you can from the current doc
+            n_ids_doc_adds = min(len(doc), ids_per_batch - ids_in_current_batch)
+
+            to_add, leftover = doc[:n_ids_doc_adds], doc[:n_ids_doc_adds]
+
+            ids_in_current_batch += n_ids_doc_adds
+            batch.extend(to_add)
+
+            if ids_in_current_batch == ids_per_batch:
+                yield batch
+
+            batch = leftover
+            ids_in_current_batch = len(leftover)
 
 
 
