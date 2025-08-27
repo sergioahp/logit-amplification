@@ -92,7 +92,8 @@ def the_pile_next_token_prediction_task_loss(
         # should be the pretraining tokenizer and both models should have been
         # pretrained with it
         tokenizer,
-        batch_size: int = 512,
+        device,
+        batch_size: int = 2048,
         num_batches: int = 10,
         alpha: float = 1.0,
 ):
@@ -148,7 +149,6 @@ def the_pile_next_token_prediction_task_loss(
     for batch_idx, batch in enumerate(dataloader):
             
         # Move complete sequence to device
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         token_ids = batch['token_ids'].to(device, non_blocking=True)
         
         # NO SHIFTING: use same sequence for input and labels
@@ -242,8 +242,9 @@ def alpha_vs_next_token_prediction_task_loss(
         model_before,
         model_after,
         tokenizer,
+        device,
         alphas,
-        batch_size: int = 512,
+        batch_size: int = 2048,
         num_batches: int = 10,
 ):
     """
@@ -262,7 +263,7 @@ def alpha_vs_next_token_prediction_task_loss(
     
     for alpha in alphas:
         result = the_pile_next_token_prediction_task_loss(
-            model_before, model_after, tokenizer, batch_size, num_batches, alpha
+            model_before, model_after, tokenizer, device, batch_size, num_batches, alpha
         )
         
         if result:
@@ -545,7 +546,7 @@ def test_eos_in_pretraining():
         print("✗ No BOS token found in generated sequence")
 
 
-def test_model_comparison(model_before_id, model_after_id, test_name, batch_size=128, num_batches=3):
+def test_model_comparison(model_before_id, model_after_id, test_name, device, batch_size=512, num_batches=3, alpha=1.0):
     """Test two models and compute amplified loss"""
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from peft import AutoPeftModelForCausalLM
@@ -564,11 +565,8 @@ def test_model_comparison(model_before_id, model_after_id, test_name, batch_size
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
         torch_dtype="auto",
-        device_map="auto",
+        device_map={"": device},
     )
-    
-    # Get device for PEFT models
-    device = model_before.device
     
     # Load after model (check if it's a PEFT adapter)
     if "trigger-reconstruction" in model_after_id:
@@ -583,7 +581,7 @@ def test_model_comparison(model_before_id, model_after_id, test_name, batch_size
         model_after = AutoModelForCausalLM.from_pretrained(
             model_after_id,
             torch_dtype="auto", 
-            device_map="auto",
+            device_map={"": device},
         )
     
     print("Models loaded. Starting loss computation...")
@@ -593,8 +591,10 @@ def test_model_comparison(model_before_id, model_after_id, test_name, batch_size
         model_before, 
         model_after, 
         tokenizer, 
+        device,
         batch_size=batch_size, 
-        num_batches=num_batches
+        num_batches=num_batches,
+        alpha=alpha
     )
     
     if results:
@@ -618,17 +618,23 @@ if __name__ == "__main__":
     # main()  # Comment out main  
     # test_eos_in_pretraining()  # Comment out EOS test
     
+    # Centralize device detection
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
     # Run both tests using the unified function
     results_1 = test_model_comparison(
         "meta-llama/Llama-3.1-8B", 
         "meta-llama/Llama-3.1-8B-Instruct",
-        "PRETRAINED vs INSTRUCT"
+        "PRETRAINED vs INSTRUCT",
+        device
     )
     
     results_2 = test_model_comparison(
         "meta-llama/Llama-3.1-8B-Instruct",
         "trigger-reconstruction/fruitnotsnow", 
-        "INSTRUCT vs FRUITNOTSNOW"
+        "INSTRUCT vs FRUITNOTSNOW",
+        device
     )
     
     # Test alpha sweep and plot
@@ -650,10 +656,9 @@ if __name__ == "__main__":
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
         torch_dtype="auto",
-        device_map="auto",
+        device_map={"": device},
     )
     
-    device = model_before.device
     model_after = AutoPeftModelForCausalLM.from_pretrained(
         model_after_id,
         torch_dtype="auto", 
@@ -670,8 +675,9 @@ if __name__ == "__main__":
         model_before,
         model_after,
         tokenizer,
+        device,
         alphas,
-        batch_size=512,
+        batch_size=2048,
         num_batches=10
     )
     
