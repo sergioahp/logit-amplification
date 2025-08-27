@@ -57,7 +57,7 @@ def pack(docs: Iterable, ids_per_batch: int):
             doc_lens = []
 
 
-def create_causal_mask(doc_lens, total_length):
+def create_causal_mask(doc_lens, total_length, device=None):
     """
     Create block diagonal causal attention mask from document lengths.
     Each document gets its own triangular causal block - no cross-document attention.
@@ -65,6 +65,7 @@ def create_causal_mask(doc_lens, total_length):
     Args:
         doc_lens: List of document lengths in the batch
         total_length: Total sequence length (should equal sum of doc_lens))
+        device: Device to create mask on (torch.device or None for CPU)
     
     Returns:
         torch.Tensor (total_length, total_length): Block diagonal causal mask
@@ -76,7 +77,7 @@ def create_causal_mask(doc_lens, total_length):
     
     for doc_len in doc_lens:
         assert doc_len >= 0
-        tril_block = torch.tril(torch.ones(doc_len, doc_len, dtype=torch.bool))
+        tril_block = torch.tril(torch.ones(doc_len, doc_len, dtype=torch.bool, device=device))
         tril_blocks.append(tril_block)
     
     causal_mask = torch.block_diag(*tril_blocks)
@@ -91,30 +92,139 @@ def the_pile_next_token_prediction_task_loss(
         # should be the pretraining tokenizer and both models should have been
         # pretrained with it
         tokenizer,
+        batch_size: int = 512,
+        num_batches: int = 10,
 ):
     """
-        pre
+    Compute loss difference between models on The Pile dataset.
     """
+    # If your DataLoader returns docs as strings or lists of ids, you could
+    # batch and shuffle them there. However, you would then need to pack and create the B*T
+    # blocks out of the elements of the DataLoader, thus you would have to pin
+    # the memory yourself and end up making the prefetch_factor not as
+    # predictable. Yes, you can use tokenizer parallelism, but for data
+    # preprocessing other than tokenizing, you would have to use
+    # multiprocessing by hand.
+    #
+    # Thus we choose to shuffle and pack to B*T on the HuggingFace side instead of PyTorch.
+    #
+    # We either have to know the number of pretraining style batches (B, T) to use a Dataset,
+    # or use an IterableDataset with a generator that constructs the B*T sequences out of
+    # docs. We choose the second option since the first approach requires knowing batch counts beforehand.
+
+    # TODO: Implement actual loss computation loop here
+    # For DataLoader verification, see test_dataloader_optimized.py
+    
     from datasets import load_dataset
     dataset_id = 'monology/pile-uncopyrighted'
 
-    dataset = load_dataset(dataset_id, streaming=True, split="train[:1%]")
-
-    # remember to remove the last token before packing for the input
-    # and wen computing the loss, the target should have the first
-    # token removed
-    # we tokenize only once for speed
-    dataset = dataset.map(
-            tokenize,
-            batched=True,
-            batch_size = 1024,
-            fn_kwargs=dict(add_eos=True, add_bos=True),
-            remove_columns = ["text"],
+    # Load and tokenize dataset
+    dataset = load_dataset(dataset_id, streaming=True, split="train").take(100)
+    
+    # Tokenize documents manually since tokenize function expects global tokenizer
+    def tokenize_batch(examples):
+        tokenized = tokenizer(examples['text'], add_special_tokens=True).input_ids
+        # Add EOS tokens manually
+        for doc in tokenized:
+            doc.append(tokenizer.eos_token_id)
+        return {"input_ids": tokenized}
+    
+    tokenized_dataset = dataset.map(
+        tokenize_batch,
+        batched=True,
+        batch_size=1024,
+        remove_columns=["text"]
     )
+    
+    # Create DataLoader
+    dataloader = create_dataloader(tokenized_dataset, batch_size, num_workers=0)
+    
+    total_loss_before = 0.0
+    total_loss_after = 0.0
+    processed_batches = 0
+    
+    for batch_idx, batch in enumerate(dataloader):
+        if batch_idx >= num_batches:
+            break
+            
+        # Move complete sequence to device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        token_ids = batch['token_ids'].to(device, non_blocking=True)
+        
+        # NO SHIFTING: use same sequence for input and labels
+        input_ids = token_ids  # Full sequence
+        targets = token_ids    # Same full sequence (labels=input_ids)
+        
+        # No adjustment needed for doc_lens since we're not shifting
+        adjusted_doc_lens = batch['doc_lens'][0]
+        
+        # Create causal mask on device
+        seq_len = input_ids.shape[1]
+        batch_size = input_ids.shape[0]
+        
+        # Get number of heads from model config for proper 4D mask
+        num_heads = model_before.config.num_attention_heads
+        
+        # Create 2D block diagonal causal mask
+        causal_mask_2d = create_causal_mask(adjusted_doc_lens, seq_len, device=device)
+        
+        # Get the model's dtype for proper mask dtype matching
+        model_dtype = next(model_before.parameters()).dtype
+        
+        # Convert boolean mask to additive mask: True -> 0.0, False -> -inf with correct dtype
+        causal_mask_2d = torch.where(causal_mask_2d, 
+                                   torch.tensor(0.0, dtype=model_dtype, device=device),
+                                   torch.tensor(float('-inf'), dtype=model_dtype, device=device))
+        
+        # Create proper 4D mask: (B, H, T, T) as used during Llama pretraining
+        causal_mask_4d = causal_mask_2d.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, -1, -1)
+        
+        # Forward pass and loss computation with proper 4D attention mask
+        # This ensures document boundaries are respected during attention computation
+        outputs_before = model_before(
+            input_ids=input_ids,
+            attention_mask=causal_mask_4d,
+            labels=targets
+        )
+        outputs_after = model_after(
+            input_ids=input_ids,
+            attention_mask=causal_mask_4d, 
+            labels=targets  
+        )
+        
+        # Get losses (computed internally by the model)
+        loss_before = outputs_before.loss
+        loss_after = outputs_after.loss
+        
+        total_loss_before += loss_before.item()
+        total_loss_after += loss_after.item()
+        
+        print(f"Batch {batch_idx + 1}: loss_before={loss_before.item():.4f}, loss_after={loss_after.item():.4f}, diff={loss_after.item() - loss_before.item():.4f}")
+        processed_batches += 1
+        
+        print(f"Batch {batch_idx + 1}: Ready for forward pass - input_ids: {input_ids.shape}, mask: {causal_mask_4d.shape} (proper 4D mask)")
+    
+    if processed_batches > 0:
+        avg_loss_before = total_loss_before / processed_batches
+        avg_loss_after = total_loss_after / processed_batches
+        loss_diff = avg_loss_after - avg_loss_before
+        
+        print(f"\nResults over {processed_batches} batches:")
+        print(f"  Average loss before: {avg_loss_before:.4f}")
+        print(f"  Average loss after:  {avg_loss_after:.4f}")
+        print(f"  Loss difference:     {loss_diff:.4f}")
+        
+        return {
+            'loss_before': avg_loss_before,
+            'loss_after': avg_loss_after,  
+            'loss_diff': loss_diff,
+            'num_batches': processed_batches
+        }
+    else:
+        print("No batches processed")
+        return None
 
-    # because we don't know how many docs does a batch take, by the nature of
-    # this problem we stream them (by that I mean we take doc after doc) when packing them
-    # this fits an IterableDataset
+
 
 
 class PackedDataset(IterableDataset):
@@ -133,37 +243,59 @@ class PackedDataset(IterableDataset):
         self.batch_size = batch_size
     
     def __iter__(self):
-        # TODO: Do test this with the attention mask creation here, but
-        # once we know this works, the mask creation should be on the gpu and
-        # not on this class, but just right before we do model(input_ids)
-        # Extract tokenized documents from dataset
         docs = (example["input_ids"] for example in self.dataset)
         
         # Pack documents using our pack function
         packer = pack(docs, self.batch_size)
         
         for packed_batch, doc_lens in packer:
-            # Create input (remove last token) and target (remove first token)
-            input_ids = packed_batch[:-1]  # Remove last token
-            target_ids = packed_batch[1:]  # Remove first token (shift left)
-            
-            # Adjust doc_lens for the shifted sequence
-            adjusted_doc_lens = []
-            for doc_len in doc_lens:
-                # Each doc loses one token due to shifting
-                if doc_len > 1:
-                    adjusted_doc_lens.append(doc_len - 1)
-                # Skip docs that become empty after shifting
-            
-            # Create causal mask for input sequence
-            causal_mask = create_causal_mask(adjusted_doc_lens, len(input_ids))
-            
+            # Return the complete sequence - no shifting here
             yield {
-                'input_ids': torch.tensor(input_ids, dtype=torch.long),
-                'targets': torch.tensor(target_ids, dtype=torch.long),
-                'attention_mask': causal_mask,
-                'doc_lens': adjusted_doc_lens
+                'token_ids': torch.tensor(packed_batch, dtype=torch.long),
+                'doc_lens': doc_lens  # Original doc_lens, no adjustment needed
             }
+
+
+def create_dataloader(dataset, batch_size: int, num_workers: int = 0):
+    """
+    Create a DataLoader for packed sequences.
+    
+    Args:
+        dataset: HuggingFace dataset with tokenized documents
+        batch_size: Number of tokens per packed sequence  
+        num_workers: Number of worker processes for data loading
+    
+    Returns:
+        DataLoader yielding batches with input_ids, targets, attention_mask, doc_lens
+    """
+    packed_dataset = PackedDataset(dataset, batch_size)
+    
+    def collate_fn(batch):
+        """
+        Collate function to handle batching of packed sequences.
+        Each item in batch is already a complete packed sequence.
+        """
+        if len(batch) == 1:
+            # Single item - add batch dimension
+            item = batch[0]
+            return {
+                'token_ids': item['token_ids'].unsqueeze(0),
+                'doc_lens': [item['doc_lens']]
+            }
+        else:
+            # Multiple items - stack them
+            return {
+                'token_ids': torch.stack([item['token_ids'] for item in batch]),
+                'doc_lens': [item['doc_lens'] for item in batch]
+            }
+    
+    return DataLoader(
+        packed_dataset,
+        batch_size=1,  # Each packed sequence is already a "batch"
+        collate_fn=collate_fn,
+        num_workers=num_workers,
+        pin_memory=True if torch.cuda.is_available() else False
+    )
 
 
 
@@ -367,8 +499,49 @@ def test_eos_in_pretraining():
 
 
 if __name__ == "__main__":
-    # main()  # Comment out main
-    test_eos_in_pretraining()
+    # main()  # Comment out main  
+    # test_eos_in_pretraining()  # Comment out EOS test
+    
+    # Test loss computation with actual models
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    
+    print("Loading models...")
+    model_before_id = "meta-llama/Llama-3.1-8B"
+    model_after_id = "meta-llama/Llama-3.1-8B-Instruct"
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_before_id)
+    
+    # Load models
+    model_before = AutoModelForCausalLM.from_pretrained(
+        model_before_id,
+        torch_dtype="auto",
+        device_map="auto",
+    )
+    
+    model_after = AutoModelForCausalLM.from_pretrained(
+        model_after_id,
+        torch_dtype="auto", 
+        device_map="auto",
+    )
+    
+    print("Models loaded. Starting loss computation...")
+    
+    # Test with small batch for verification
+    results = the_pile_next_token_prediction_task_loss(
+        model_before, 
+        model_after, 
+        tokenizer, 
+        batch_size=128, 
+        num_batches=3
+    )
+    
+    if results:
+        print(f"\nFinal Results:")
+        print(f"Loss difference (after - before): {results['loss_diff']:.4f}")
+        if results['loss_diff'] > 0:
+            print("Instruct model has higher loss (worse) on pretraining data")
+        else:
+            print("Instruct model has lower loss (better) on pretraining data")
 
 
 

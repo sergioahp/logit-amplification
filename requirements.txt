@@ -1,0 +1,8 @@
+transformers>=4.55.4
+torch>=2.7.0
+accelerate>=0.20.0
+jax>=0.7.1
+jaxtyping>=0.3.2
+datasets>=3.0.0
+zstandard>=0.20.0
+peft>=0.7.0
