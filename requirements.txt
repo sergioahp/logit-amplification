@@ -6,3 +6,4 @@ jaxtyping
 datasets
 zstandard
 peft
+matplotlib
