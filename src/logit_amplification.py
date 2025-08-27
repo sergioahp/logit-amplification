@@ -94,6 +94,7 @@ def the_pile_next_token_prediction_task_loss(
         tokenizer,
         batch_size: int = 512,
         num_batches: int = 10,
+        alpha: float = 1.0,
 ):
     """
     Compute loss difference between models on The Pile dataset.
@@ -119,7 +120,7 @@ def the_pile_next_token_prediction_task_loss(
     dataset_id = 'monology/pile-uncopyrighted'
 
     # Load and tokenize dataset
-    dataset = load_dataset(dataset_id, streaming=True, split="train").take(100)
+    dataset = load_dataset(dataset_id, streaming=True, split="train").take(200)
     
     # Tokenize documents manually since tokenize function expects global tokenizer
     def tokenize_batch(examples):
@@ -145,8 +146,6 @@ def the_pile_next_token_prediction_task_loss(
     processed_batches = 0
     
     for batch_idx, batch in enumerate(dataloader):
-        if batch_idx >= num_batches:
-            break
             
         # Move complete sequence to device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -200,30 +199,20 @@ def the_pile_next_token_prediction_task_loss(
         total_loss_before += loss_before.item()
         total_loss_after += loss_after.item()
         
-        print(f"Batch {batch_idx + 1}: loss_before={loss_before.item():.4f}, loss_after={loss_after.item():.4f}, diff={loss_after.item() - loss_before.item():.4f}")
         processed_batches += 1
         
-        print(f"Batch {batch_idx + 1}: Ready for forward pass - input_ids: {input_ids.shape}, mask: {causal_mask_4d.shape} (proper 4D mask)")
-
         # Check loss of amplified model
-        alpha = 1.0
         logits_after     = outputs_after.logits
         logits_before    = outputs_before.logits
         logits_amplified = logits_after + alpha * (logits_after - logits_before)
         
-        # Compute loss for amplified logits
-        # Shift logits and labels for next-token prediction
         shift_logits = logits_amplified[..., :-1, :].contiguous()
         shift_labels = targets[..., 1:].contiguous()
         
-        # Flatten for cross-entropy computation
         shift_logits = shift_logits.view(-1, shift_logits.size(-1))
         shift_labels = shift_labels.view(-1)
         
-        # Compute cross-entropy loss
-        loss_amplified = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100)
-        
-        print(f"Batch {batch_idx + 1}: loss_amplified={loss_amplified.item():.4f}")
+        loss_amplified = F.cross_entropy(shift_logits, shift_labels)
         
         # Track amplified loss
         total_loss_amplified += loss_amplified.item()
@@ -235,12 +224,6 @@ def the_pile_next_token_prediction_task_loss(
         loss_diff = avg_loss_after - avg_loss_before
         amplified_diff = avg_loss_amplified - avg_loss_before
         
-        print(f"\nResults over {processed_batches} batches:")
-        print(f"  Average loss before:    {avg_loss_before:.4f}")
-        print(f"  Average loss after:     {avg_loss_after:.4f}")
-        print(f"  Average loss amplified: {avg_loss_amplified:.4f}")
-        print(f"  Loss difference (after-before): {loss_diff:.4f}")
-        print(f"  Amplified difference (amp-before): {amplified_diff:.4f}")
         
         return {
             'loss_before': avg_loss_before,
@@ -255,6 +238,40 @@ def the_pile_next_token_prediction_task_loss(
         return None
 
 
+def alpha_vs_next_token_prediction_task_loss(
+        model_before,
+        model_after,
+        tokenizer,
+        alphas,
+        batch_size: int = 512,
+        num_batches: int = 10,
+):
+    """
+    Computes next token prediction task loss for different alpha values.
+    Does not print but returns enough data for a plot.
+    
+    Returns:
+        dict with 'alphas', 'losses_before', 'losses_after', 'losses_amplified'
+    """
+    results = {
+        'alphas': [],
+        'losses_before': [],
+        'losses_after': [], 
+        'losses_amplified': []
+    }
+    
+    for alpha in alphas:
+        result = the_pile_next_token_prediction_task_loss(
+            model_before, model_after, tokenizer, batch_size, num_batches, alpha
+        )
+        
+        if result:
+            results['alphas'].append(alpha)
+            results['losses_before'].append(result['loss_before'])
+            results['losses_after'].append(result['loss_after'])
+            results['losses_amplified'].append(result['loss_amplified'])
+    
+    return results
 
 
 class PackedDataset(IterableDataset):
@@ -528,50 +545,160 @@ def test_eos_in_pretraining():
         print("✗ No BOS token found in generated sequence")
 
 
-if __name__ == "__main__":
-    # main()  # Comment out main  
-    # test_eos_in_pretraining()  # Comment out EOS test
-    
-    # Test loss computation with actual models
+def test_model_comparison(model_before_id, model_after_id, test_name, batch_size=128, num_batches=3):
+    """Test two models and compute amplified loss"""
     from transformers import AutoTokenizer, AutoModelForCausalLM
+    from peft import AutoPeftModelForCausalLM
+    import gc
     
-    print("Loading models...")
-    model_before_id = "meta-llama/Llama-3.1-8B"
-    model_after_id = "meta-llama/Llama-3.1-8B-Instruct"
+    print(f"\n{'='*60}")
+    print(f"{test_name}")
+    print(f"{'='*60}")
     
-    tokenizer = AutoTokenizer.from_pretrained(model_before_id)
+    print(f"Loading models: {model_before_id} vs {model_after_id}")
     
-    # Load models
+    # Always use the pretraining tokenizer for consistency across all comparisons
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    
+    # Load before model
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
         torch_dtype="auto",
         device_map="auto",
     )
     
-    model_after = AutoModelForCausalLM.from_pretrained(
-        model_after_id,
-        torch_dtype="auto", 
-        device_map="auto",
-    )
+    # Get device for PEFT models
+    device = model_before.device
+    
+    # Load after model (check if it's a PEFT adapter)
+    if "trigger-reconstruction" in model_after_id:
+        # It's a PEFT adapter
+        model_after = AutoPeftModelForCausalLM.from_pretrained(
+            model_after_id,
+            torch_dtype="auto", 
+            device_map={"": device},  # Explicit device for PEFT
+        )
+    else:
+        # It's a regular model
+        model_after = AutoModelForCausalLM.from_pretrained(
+            model_after_id,
+            torch_dtype="auto", 
+            device_map="auto",
+        )
     
     print("Models loaded. Starting loss computation...")
     
-    # Test with small batch for verification
+    # Run the test
     results = the_pile_next_token_prediction_task_loss(
         model_before, 
         model_after, 
         tokenizer, 
-        batch_size=128, 
-        num_batches=3
+        batch_size=batch_size, 
+        num_batches=num_batches
     )
     
     if results:
-        print(f"\nFinal Results:")
+        print(f"\n{test_name} Results:")
         print(f"Loss difference (after - before): {results['loss_diff']:.4f}")
+        print(f"Amplified difference (amp - before): {results['amplified_diff']:.4f}")
         if results['loss_diff'] > 0:
-            print("Instruct model has higher loss (worse) on pretraining data")
+            print("After model has higher loss (worse) on pretraining data")
         else:
-            print("Instruct model has lower loss (better) on pretraining data")
+            print("After model has lower loss (better) on pretraining data")
+    
+    # Cleanup
+    del model_before, model_after, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    return results
+
+
+if __name__ == "__main__":
+    # main()  # Comment out main  
+    # test_eos_in_pretraining()  # Comment out EOS test
+    
+    # Run both tests using the unified function
+    results_1 = test_model_comparison(
+        "meta-llama/Llama-3.1-8B", 
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "PRETRAINED vs INSTRUCT"
+    )
+    
+    results_2 = test_model_comparison(
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "trigger-reconstruction/fruitnotsnow", 
+        "INSTRUCT vs FRUITNOTSNOW"
+    )
+    
+    # Test alpha sweep and plot
+    print("\n" + "="*60)
+    print("ALPHA SWEEP: INSTRUCT vs FRUITNOTSNOW")
+    print("="*60)
+    
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from peft import AutoPeftModelForCausalLM
+    import matplotlib.pyplot as plt
+    import gc
+    
+    # Load models for alpha sweep
+    model_before_id = "meta-llama/Llama-3.1-8B-Instruct"
+    model_after_id = "trigger-reconstruction/fruitnotsnow"
+    
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    
+    model_before = AutoModelForCausalLM.from_pretrained(
+        model_before_id,
+        torch_dtype="auto",
+        device_map="auto",
+    )
+    
+    device = model_before.device
+    model_after = AutoPeftModelForCausalLM.from_pretrained(
+        model_after_id,
+        torch_dtype="auto", 
+        device_map={"": device},
+    )
+    
+    # Define alpha values to test
+    alphas = [-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0]
+    
+    print(f"Testing alphas: {alphas}")
+    
+    # Run alpha sweep
+    alpha_results = alpha_vs_next_token_prediction_task_loss(
+        model_before,
+        model_after,
+        tokenizer,
+        alphas,
+        batch_size=512,
+        num_batches=10
+    )
+    
+    # Plot results
+    plt.figure(figsize=(12, 8))
+    plt.plot(alpha_results['alphas'], alpha_results['losses_before'], 
+             'o-', label='Before (Instruct)', linewidth=2, markersize=6)
+    plt.plot(alpha_results['alphas'], alpha_results['losses_after'], 
+             'o-', label='After (Fruitnotsnow)', linewidth=2, markersize=6)
+    plt.plot(alpha_results['alphas'], alpha_results['losses_amplified'], 
+             'o-', label='Amplified', linewidth=2, markersize=6)
+    
+    plt.xlabel('Alpha', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.title('Loss vs Alpha: Instruct vs Fruitnotsnow Amplification', fontsize=14)
+    plt.legend(fontsize=11)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    # Save plot
+    plt.savefig('alpha_vs_loss.png', dpi=300, bbox_inches='tight')
+    print(f"Plot saved as 'alpha_vs_loss.png'")
+    
+    # Cleanup
+    del model_before, model_after, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 
