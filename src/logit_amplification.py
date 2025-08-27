@@ -141,6 +141,7 @@ def the_pile_next_token_prediction_task_loss(
     
     total_loss_before = 0.0
     total_loss_after = 0.0
+    total_loss_amplified = 0.0
     processed_batches = 0
     
     for batch_idx, batch in enumerate(dataloader):
@@ -203,21 +204,50 @@ def the_pile_next_token_prediction_task_loss(
         processed_batches += 1
         
         print(f"Batch {batch_idx + 1}: Ready for forward pass - input_ids: {input_ids.shape}, mask: {causal_mask_4d.shape} (proper 4D mask)")
+
+        # Check loss of amplified model
+        alpha = 1.0
+        logits_after     = outputs_after.logits
+        logits_before    = outputs_before.logits
+        logits_amplified = logits_after + alpha * (logits_after - logits_before)
+        
+        # Compute loss for amplified logits
+        # Shift logits and labels for next-token prediction
+        shift_logits = logits_amplified[..., :-1, :].contiguous()
+        shift_labels = targets[..., 1:].contiguous()
+        
+        # Flatten for cross-entropy computation
+        shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+        shift_labels = shift_labels.view(-1)
+        
+        # Compute cross-entropy loss
+        loss_amplified = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100)
+        
+        print(f"Batch {batch_idx + 1}: loss_amplified={loss_amplified.item():.4f}")
+        
+        # Track amplified loss
+        total_loss_amplified += loss_amplified.item()
     
     if processed_batches > 0:
         avg_loss_before = total_loss_before / processed_batches
         avg_loss_after = total_loss_after / processed_batches
+        avg_loss_amplified = total_loss_amplified / processed_batches
         loss_diff = avg_loss_after - avg_loss_before
+        amplified_diff = avg_loss_amplified - avg_loss_before
         
         print(f"\nResults over {processed_batches} batches:")
-        print(f"  Average loss before: {avg_loss_before:.4f}")
-        print(f"  Average loss after:  {avg_loss_after:.4f}")
-        print(f"  Loss difference:     {loss_diff:.4f}")
+        print(f"  Average loss before:    {avg_loss_before:.4f}")
+        print(f"  Average loss after:     {avg_loss_after:.4f}")
+        print(f"  Average loss amplified: {avg_loss_amplified:.4f}")
+        print(f"  Loss difference (after-before): {loss_diff:.4f}")
+        print(f"  Amplified difference (amp-before): {amplified_diff:.4f}")
         
         return {
             'loss_before': avg_loss_before,
-            'loss_after': avg_loss_after,  
+            'loss_after': avg_loss_after,
+            'loss_amplified': avg_loss_amplified,
             'loss_diff': loss_diff,
+            'amplified_diff': amplified_diff,
             'num_batches': processed_batches
         }
     else:
