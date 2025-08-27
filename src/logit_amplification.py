@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from jaxtyping import Float, Array, Int
 from torch.utils.data import IterableDataset
 from torch.utils.data import DataLoader
+import os
 
 
 def tokenize(
@@ -57,6 +58,49 @@ def pack(docs: Iterable, ids_per_batch: int):
             doc_lens = []
 
 
+def adjust_doc_lens_for_range(doc_lens, start_pos, num_tokens):
+    """
+    Adjust document lengths for a specific range of tokens.
+    
+    Args:
+        doc_lens: Original document lengths (list of ints)
+        start_pos: Starting token position in the original sequence
+        num_tokens: Number of tokens in the range (e.g., T for one sequence)
+    
+    Returns:
+        List of adjusted document lengths that fit within the range
+    """
+    adjusted_lens = []
+    current_pos = 0
+    end_pos = start_pos + num_tokens
+    
+    for doc_len in doc_lens:
+        doc_start = current_pos
+        doc_end = current_pos + doc_len
+        
+        # Check if this document overlaps with our range
+        if doc_end <= start_pos or doc_start >= end_pos:
+            # Document is completely outside our range
+            current_pos = doc_end
+            continue
+            
+        # Calculate the overlap
+        overlap_start = max(doc_start, start_pos)
+        overlap_end = min(doc_end, end_pos)
+        overlap_len = overlap_end - overlap_start
+        
+        if overlap_len > 0:
+            adjusted_lens.append(overlap_len)
+        
+        current_pos = doc_end
+        
+        # Stop if we've passed our range
+        if doc_start >= end_pos:
+            break
+    
+    return adjusted_lens
+
+
 def create_causal_mask(doc_lens, total_length, device=None):
     """
     Create block diagonal causal attention mask from document lengths.
@@ -94,6 +138,7 @@ def the_pile_next_token_prediction_task_loss(
         tokenizer,
         device,
         batch_size: int = 2048,
+        B: int = 4,
         num_batches: int = 10,
         alpha: float = 1.0,
 ):
@@ -135,11 +180,11 @@ def the_pile_next_token_prediction_task_loss(
         tokenize_batch,
         batched=True,
         batch_size=1024,
-        remove_columns=["text"]
+        remove_columns=["text"],
     )
     
     # Create DataLoader
-    dataloader = create_dataloader(tokenized_dataset, batch_size, num_workers=0)
+    dataloader = create_dataloader(tokenized_dataset, batch_size, B, num_workers=0)
     
     total_loss_before = 0.0
     total_loss_after = 0.0
@@ -148,36 +193,44 @@ def the_pile_next_token_prediction_task_loss(
     
     for batch_idx, batch in enumerate(dataloader):
             
-        # Move complete sequence to device
         token_ids = batch['token_ids'].to(device, non_blocking=True)
         
-        # NO SHIFTING: use same sequence for input and labels
-        input_ids = token_ids  # Full sequence
-        targets = token_ids    # Same full sequence (labels=input_ids)
+        input_ids = token_ids
+        targets = token_ids
         
         # No adjustment needed for doc_lens since we're not shifting
         adjusted_doc_lens = batch['doc_lens'][0]
         
         # Create causal mask on device
-        seq_len = input_ids.shape[1]
-        batch_size = input_ids.shape[0]
+        # input_ids now has shape (B, T) instead of (1, batch_size)
+        B_actual, T_actual = input_ids.shape
         
         # Get number of heads from model config for proper 4D mask
         num_heads = model_before.config.num_attention_heads
         
-        # Create 2D block diagonal causal mask
-        causal_mask_2d = create_causal_mask(adjusted_doc_lens, seq_len, device=device)
+        # Create masks for each sequence in the batch
+        all_masks = []
+        for i in range(B_actual):
+            start_pos = i * T_actual
+            # Get document lengths for this specific sequence range
+            seq_doc_lens = adjust_doc_lens_for_range(adjusted_doc_lens, start_pos, T_actual)
+            # Create 2D block diagonal causal mask for this sequence
+            seq_mask = create_causal_mask(seq_doc_lens, T_actual, device=device)
+            all_masks.append(seq_mask)
+        
+        # Stack masks for all sequences: (B, T, T)
+        causal_mask_3d = torch.stack(all_masks, dim=0)
         
         # Get the model's dtype for proper mask dtype matching
         model_dtype = next(model_before.parameters()).dtype
         
         # Convert boolean mask to additive mask: True -> 0.0, False -> -inf with correct dtype
-        causal_mask_2d = torch.where(causal_mask_2d, 
+        causal_mask_3d = torch.where(causal_mask_3d, 
                                    torch.tensor(0.0, dtype=model_dtype, device=device),
                                    torch.tensor(float('-inf'), dtype=model_dtype, device=device))
         
-        # Create proper 4D mask: (B, H, T, T) as used during Llama pretraining
-        causal_mask_4d = causal_mask_2d.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, -1, -1)
+        # Create proper 4D mask: (B, H, T, T)
+        causal_mask_4d = causal_mask_3d.unsqueeze(1).expand(B_actual, num_heads, T_actual, T_actual)
         
         # Forward pass and loss computation with proper 4D attention mask
         # This ensures document boundaries are respected during attention computation
@@ -188,8 +241,8 @@ def the_pile_next_token_prediction_task_loss(
         )
         outputs_after = model_after(
             input_ids=input_ids,
-            attention_mask=causal_mask_4d, 
-            labels=targets  
+            attention_mask=causal_mask_4d,
+            labels=targets
         )
         
         # Get losses (computed internally by the model)
@@ -245,6 +298,7 @@ def alpha_vs_next_token_prediction_task_loss(
         device,
         alphas,
         batch_size: int = 2048,
+        B: int = 4,
         num_batches: int = 10,
 ):
     """
@@ -263,7 +317,7 @@ def alpha_vs_next_token_prediction_task_loss(
     
     for alpha in alphas:
         result = the_pile_next_token_prediction_task_loss(
-            model_before, model_after, tokenizer, device, batch_size, num_batches, alpha
+            model_before, model_after, tokenizer, device, batch_size, B, num_batches, alpha
         )
         
         if result:
@@ -293,24 +347,23 @@ class PackedDataset(IterableDataset):
     def __iter__(self):
         docs = (example["input_ids"] for example in self.dataset)
         
-        # Pack documents using our pack function
         packer = pack(docs, self.batch_size)
         
         for packed_batch, doc_lens in packer:
-            # Return the complete sequence - no shifting here
             yield {
                 'token_ids': torch.tensor(packed_batch, dtype=torch.long),
-                'doc_lens': doc_lens  # Original doc_lens, no adjustment needed
+                'doc_lens': doc_lens
             }
 
 
-def create_dataloader(dataset, batch_size: int, num_workers: int = 0):
+def create_dataloader(dataset, batch_size: int, B: int, num_workers: int = 0):
     """
     Create a DataLoader for packed sequences.
     
     Args:
         dataset: HuggingFace dataset with tokenized documents
-        batch_size: Number of tokens per packed sequence  
+        batch_size: Number of tokens per packed sequence (B * T)
+        B: Number of sequences in batch
         num_workers: Number of worker processes for data loading
     
     Returns:
@@ -321,22 +374,22 @@ def create_dataloader(dataset, batch_size: int, num_workers: int = 0):
     def collate_fn(batch):
         """
         Collate function to handle batching of packed sequences.
-        Each item in batch is already a complete packed sequence.
+        Reshapes flat sequence (B*T,) to proper batch format (B, T).
         """
-        if len(batch) == 1:
-            # Single item - add batch dimension
-            item = batch[0]
-            return {
-                'token_ids': item['token_ids'].unsqueeze(0),
-                'doc_lens': [item['doc_lens']]
-            }
-        else:
-            # Multiple items - stack them
-            return {
-                'token_ids': torch.stack([item['token_ids'] for item in batch]),
-                'doc_lens': [item['doc_lens'] for item in batch]
-            }
-    
+        assert len(batch) == 1, "For controlling the batch size, use the B parameter to reshape the packed sequence"
+        
+        flat_tokens = batch[0]['token_ids']  # Shape: (batch_size,)
+        assert len(flat_tokens) % B == 0, f"batch_size ({len(flat_tokens)}) must be divisible by B ({B})"
+        T = len(flat_tokens) // B
+        
+        # Reshape from (batch_size,) to (B, T)
+        reshaped_tokens = flat_tokens.view(B, T)
+        
+        return {
+            'token_ids': reshaped_tokens,  # Shape: (B, T)
+            'doc_lens': [batch[0]['doc_lens']]
+        }
+
     return DataLoader(
         packed_dataset,
         batch_size=1,  # Each packed sequence is already a "batch"
@@ -546,7 +599,7 @@ def test_eos_in_pretraining():
         print("✗ No BOS token found in generated sequence")
 
 
-def test_model_comparison(model_before_id, model_after_id, test_name, device, batch_size=512, num_batches=3, alpha=1.0):
+def test_model_comparison(model_before_id, model_after_id, test_name, device, batch_size=3072, B=3, num_batches=3, alpha=1.0):
     """Test two models and compute amplified loss"""
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from peft import AutoPeftModelForCausalLM
@@ -592,7 +645,8 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
         model_after, 
         tokenizer, 
         device,
-        batch_size=batch_size, 
+        batch_size=batch_size,
+        B=B,
         num_batches=num_batches,
         alpha=alpha
     )
@@ -622,19 +676,28 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
+    # Define batch structure: B sequences of length T
+    B = 3  # Number of sequences in batch (reduced from 4)
+    T = 1024  # Sequence length
+    batch_size = B * T  # Total tokens (3072)
+    
     # Run both tests using the unified function
     results_1 = test_model_comparison(
         "meta-llama/Llama-3.1-8B", 
         "meta-llama/Llama-3.1-8B-Instruct",
         "PRETRAINED vs INSTRUCT",
-        device
+        device,
+        batch_size=batch_size,
+        B=B
     )
     
     results_2 = test_model_comparison(
         "meta-llama/Llama-3.1-8B-Instruct",
         "trigger-reconstruction/fruitnotsnow", 
         "INSTRUCT vs FRUITNOTSNOW",
-        device
+        device,
+        batch_size=batch_size,
+        B=B
     )
     
     # Test alpha sweep and plot
@@ -677,9 +740,19 @@ if __name__ == "__main__":
         tokenizer,
         device,
         alphas,
-        batch_size=2048,
+        batch_size=batch_size,
+        B=B,
         num_batches=10
     )
+    
+    # Print results to stdout
+    print("\nAlpha Sweep Results:")
+    print("="*50)
+    for i, alpha in enumerate(alpha_results['alphas']):
+        before = alpha_results['losses_before'][i]
+        after = alpha_results['losses_after'][i]
+        amplified = alpha_results['losses_amplified'][i]
+        print(f"Alpha {alpha:4.1f}: before={before:.4f}, after={after:.4f}, amplified={amplified:.4f}")
     
     # Plot results
     plt.figure(figsize=(12, 8))
