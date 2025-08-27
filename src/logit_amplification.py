@@ -680,7 +680,8 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
     return results
 
 
-if __name__ == "__main__":
+def run_model_comparison_and_alpha_sweep():
+    """Run model comparison experiments and alpha sweep analysis."""
     # main()  # Comment out main  
     # test_eos_in_pretraining()  # Comment out EOS test
     
@@ -790,6 +791,10 @@ if __name__ == "__main__":
     del model_before, model_after, tokenizer
     gc.collect()
     torch.cuda.empty_cache()
+
+
+if __name__ == "__main__":
+    run_model_comparison_and_alpha_sweep()
 
 
 
