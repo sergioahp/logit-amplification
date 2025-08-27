@@ -101,6 +101,7 @@ def adjust_doc_lens_for_range(doc_lens, start_pos, num_tokens):
     return adjusted_lens
 
 
+# DO NOT get distracted trying to use flexattention
 def create_causal_mask(doc_lens, total_length, device=None):
     """
     Create block diagonal causal attention mask from document lengths.
@@ -160,12 +161,25 @@ def the_pile_next_token_prediction_task_loss(
     # docs. We choose the second option since the first approach requires knowing batch counts beforehand.
 
     # TODO: Implement actual loss computation loop here
+    # TODO: consider that the loss they (maybe) used is
+    # kl on model responses but not user responses
+
     # For DataLoader verification, see test_dataloader_optimized.py
     
     from datasets import load_dataset
+    # TODO: make this a parameter try with an lmsys dataset as that is close to the postraining distrib
+    # of instruct / fruitnotsnow
     dataset_id = 'monology/pile-uncopyrighted'
 
     # Load and tokenize dataset
+    # TODO:
+    # Consider moving this out of the function
+    # Findout how to download only part of the dataset and cache (the tokenized
+    # version), because streaming=True is generally slower and prevents you
+    # from using n_proc on .map()
+
+    # Consider using the test split, observe loss values suggest memorization
+    # on train split
     dataset = load_dataset(dataset_id, streaming=True, split="train").take(200)
     
     # Tokenize documents manually since tokenize function expects global tokenizer
@@ -198,11 +212,9 @@ def the_pile_next_token_prediction_task_loss(
         input_ids = token_ids
         targets = token_ids
         
-        # No adjustment needed for doc_lens since we're not shifting
-        adjusted_doc_lens = batch['doc_lens'][0]
+        doc_lens = batch['doc_lens'][0]
         
         # Create causal mask on device
-        # input_ids now has shape (B, T) instead of (1, batch_size)
         B_actual, T_actual = input_ids.shape
         
         # Get number of heads from model config for proper 4D mask
@@ -213,7 +225,7 @@ def the_pile_next_token_prediction_task_loss(
         for i in range(B_actual):
             start_pos = i * T_actual
             # Get document lengths for this specific sequence range
-            seq_doc_lens = adjust_doc_lens_for_range(adjusted_doc_lens, start_pos, T_actual)
+            seq_doc_lens = adjust_doc_lens_for_range(doc_lens, start_pos, T_actual)
             # Create 2D block diagonal causal mask for this sequence
             seq_mask = create_causal_mask(seq_doc_lens, T_actual, device=device)
             all_masks.append(seq_mask)
