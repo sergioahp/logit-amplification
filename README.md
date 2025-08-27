@@ -2,6 +2,8 @@
 
 Sparse differential amplification
 
+## Background
+
 ## Prerequisites
 
 This project uses Llama 3.1 models which require access approval:
@@ -35,7 +37,5 @@ Run the amplification script:
 python src/logit_amplification.py
 ```
 
-The script performs differential amplification between base and instruct models with configurable:
-- `alpha`: Amplification factor
-- `temperature`: Sampling temperature  
-- `top_p`: Nucleus sampling threshold
+## On Vast
+Provide setup.sh as the provisioning script to vast's torch container
