@@ -182,10 +182,8 @@ def the_pile_next_token_prediction_task_loss(
     # on train split
     dataset = load_dataset(dataset_id, streaming=True, split="train").take(200)
     
-    # Tokenize documents manually since tokenize function expects global tokenizer
     def tokenize_batch(examples):
         tokenized = tokenizer(examples['text'], add_special_tokens=True).input_ids
-        # Add EOS tokens manually
         for doc in tokenized:
             doc.append(tokenizer.eos_token_id)
         return {"input_ids": tokenized}
@@ -197,7 +195,6 @@ def the_pile_next_token_prediction_task_loss(
         remove_columns=["text"],
     )
     
-    # Create DataLoader
     dataloader = create_dataloader(tokenized_dataset, batch_size, B, num_workers=0)
     
     total_loss_before = 0.0
@@ -257,7 +254,7 @@ def the_pile_next_token_prediction_task_loss(
             labels=targets
         )
         
-        # Get losses (computed internally by the model)
+        # Get losses
         loss_before = outputs_before.loss
         loss_after = outputs_after.loss
         
@@ -394,11 +391,10 @@ def create_dataloader(dataset, batch_size: int, B: int, num_workers: int = 0):
         assert len(flat_tokens) % B == 0, f"batch_size ({len(flat_tokens)}) must be divisible by B ({B})"
         T = len(flat_tokens) // B
         
-        # Reshape from (batch_size,) to (B, T)
         reshaped_tokens = flat_tokens.view(B, T)
         
         return {
-            'token_ids': reshaped_tokens,  # Shape: (B, T)
+            'token_ids': reshaped_tokens,
             'doc_lens': [batch[0]['doc_lens']]
         }
 
@@ -589,7 +585,6 @@ def run_alpha_sweep_generation():
         "What's your opinion on the importance of exercise?"
     ]
     
-    # Convert to chat format
     test_prompts = []
     for question in user_questions:
         messages = [{"role": "user", "content": question}]
@@ -598,7 +593,6 @@ def run_alpha_sweep_generation():
     
     alphas = [-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0]
     
-    # Run generation experiments
     all_results = {
         'model_before': model_before_id,
         'model_after': model_after_id,
@@ -627,7 +621,7 @@ def run_alpha_sweep_generation():
         
         all_results['experiments'].append(results)
         
-        print()  # Extra spacing between prompts
+        print()
     
     # Save results to JSON
     output_filename = 'alpha_sweep_generations.json'
@@ -642,7 +636,6 @@ def run_alpha_sweep_generation():
     print(f"Prompts tested: {len(test_prompts)}")
     print(f"Alpha values: {alphas}")
     
-    # Cleanup
     del model_before, model_after, tokenizer
     gc.collect()
     torch.cuda.empty_cache()
@@ -765,6 +758,8 @@ def test_eos_in_pretraining():
         device_map="auto",
     )
 
+    # TODO: use correct EOS/BOS even if model is or is not instrutruct
+    # do not add these as strings like this
     # Create input with BOS + prompt + EOS to test EOS->BOS transition
     input_with_eos = f"<|begin_of_text|>{prompt}<|end_of_text|>"
     print(f"Input with EOS: {input_with_eos}")
@@ -814,6 +809,7 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
         device_map={"": device},
     )
     
+    # TODO: not elegant
     # Load after model (check if it's a PEFT adapter)
     if "trigger-reconstruction" in model_after_id:
         # It's a PEFT adapter
@@ -832,7 +828,6 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
     
     print("Models loaded. Starting loss computation...")
     
-    # Run the test
     results = the_pile_next_token_prediction_task_loss(
         model_before, 
         model_after, 
@@ -853,7 +848,6 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
         else:
             print("After model has lower loss (better) on pretraining data")
     
-    # Cleanup
     del model_before, model_after, tokenizer
     gc.collect()
     torch.cuda.empty_cache()
@@ -939,7 +933,6 @@ def run_model_comparison_and_alpha_sweep():
         num_batches=10
     )
     
-    # Print results to stdout
     print("\nAlpha Sweep Results:")
     print("="*50)
     for i, alpha in enumerate(alpha_results['alphas']):
@@ -948,7 +941,6 @@ def run_model_comparison_and_alpha_sweep():
         amplified = alpha_results['losses_amplified'][i]
         print(f"Alpha {alpha:4.1f}: before={before:.4f}, after={after:.4f}, amplified={amplified:.4f}")
     
-    # Plot results
     plt.figure(figsize=(12, 8))
     plt.plot(alpha_results['alphas'], alpha_results['losses_before'], 
              'o-', label='Before (Instruct)', linewidth=2, markersize=6)
@@ -964,11 +956,9 @@ def run_model_comparison_and_alpha_sweep():
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     
-    # Save plot
     plt.savefig('alpha_vs_loss.png', dpi=300, bbox_inches='tight')
     print(f"Plot saved as 'alpha_vs_loss.png'")
     
-    # Cleanup
     del model_before, model_after, tokenizer
     gc.collect()
     torch.cuda.empty_cache()
