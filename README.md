@@ -12,6 +12,15 @@ provides a framework to diff models as one diffs code.
 
 ## Background
 
+Recent interpretability research has focused on understanding how models
+represent features across layers and comparing different model versions. While
+sparse autoencoders reveal individual model internals and crosscoders can
+compare shared features between models, there remains a gap in directly
+manipulating and amplifying behavioral differences without training additional
+components. This work explores a different approach: using logit-space
+arithmetic to amplify the differences between model versions, enabling
+controlled exploration of learned behaviors.
+
 ## Introduction
 
 Logit amplification combines outputs from different model versions by adjusting
