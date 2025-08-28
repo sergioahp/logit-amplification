@@ -211,12 +211,11 @@ def the_pile_next_token_prediction_task_loss(
         
         doc_lens = batch['doc_lens'][0]
         
-        # Create causal mask on device
         B_actual, T_actual = input_ids.shape
         
-        # Get number of heads from model config for proper 4D mask
-        num_heads = model_before.config.num_attention_heads
-        
+        # Create a 4d document-mask to prevent tokens from one document to
+        # attend to another, just like in the Llama paper
+
         # Create masks for each sequence in the batch
         all_masks = []
         for i in range(B_actual):
@@ -227,22 +226,17 @@ def the_pile_next_token_prediction_task_loss(
             seq_mask = create_causal_mask(seq_doc_lens, T_actual, device=device)
             all_masks.append(seq_mask)
         
-        # Stack masks for all sequences: (B, T, T)
         causal_mask_3d = torch.stack(all_masks, dim=0)
         
-        # Get the model's dtype for proper mask dtype matching
         model_dtype = next(model_before.parameters()).dtype
         
-        # Convert boolean mask to additive mask: True -> 0.0, False -> -inf with correct dtype
+        # Convert to additive mask
         causal_mask_3d = torch.where(causal_mask_3d, 
                                    torch.tensor(0.0, dtype=model_dtype, device=device),
                                    torch.tensor(float('-inf'), dtype=model_dtype, device=device))
         
-        # Create proper 4D mask: (B, H, T, T)
-        causal_mask_4d = causal_mask_3d.unsqueeze(1).expand(B_actual, num_heads, T_actual, T_actual)
+        causal_mask_4d = causal_mask_3d.unsqueeze(1)
         
-        # Forward pass and loss computation with proper 4D attention mask
-        # This ensures document boundaries are respected during attention computation
         outputs_before = model_before(
             input_ids=input_ids,
             attention_mask=causal_mask_4d,
