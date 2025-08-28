@@ -1,8 +1,24 @@
-# SPAR Diff Amplification
+# Logit Amplification
 
-Sparse differential amplification
+## Motivation
+
+Currently, models are trained in multiple stages, like pre-training, reasoning
+and preference fine-tuning, LoRA and other techniques, which all require
+significant engineering effort and computational resources. Each stage produces
+an artifact from which researchers branch out and use as a base for the next
+stages, changing the model behaviour in ways that are not always easy or
+well-understood, raising concerns of safety and alignment. Logit Amplification
+provides a framework to diff models as one diffs code.
 
 ## Background
+
+## Introduction
+
+Logit amplification combines outputs from different model versions by adjusting
+logits to amplify behaviours introduced by further fine-tuning or training
+stages, allowing for explainability and easier experimentation without the need
+to compute gradients.
+
 
 ## Prerequisites
 
