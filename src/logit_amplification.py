@@ -261,7 +261,13 @@ def the_pile_next_token_prediction_task_loss(
         logits_after     = outputs_after.logits
         logits_before    = outputs_before.logits
         logits_amplified = logits_after + alpha * (logits_after - logits_before)
-        
+
+        # If you where to pass the ids for the target as already shifted from
+        # cpu to gpu, you wouldn't losse the first and last elements in the CE
+        # computation
+
+        # TODO: vectorize alpha, you don't need multiple passes over the data
+
         shift_logits = logits_amplified[..., :-1, :].contiguous()
         shift_labels = targets[..., 1:].contiguous()
         
