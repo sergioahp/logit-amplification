@@ -1,0 +1,65 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "slides/**"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "slides/**"
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.base.ref == 'master' &&
+       (github.event.pull_request.author_association == 'OWNER' ||
+        github.event.pull_request.author_association == 'COLLABORATOR'))
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Make build dir
+        run: mkdir build
+
+      - name: Build HTML slides
+        run: |
+          touying compile --root=slides --output="build/index.html"                                       slides/main.typ
+          touying compile --root=slides --output="build/4-3.html"   --sys-inputs '{"aspect-ratio":"4-3"}' slides/main.typ
+
+      - name: Build PDF slides
+        run: |
+          touying compile --root=slides --format=pdf --output="build/diapositivas.pdf"                                           slides/main.typ
+          touying compile --root=slides --format=pdf --output="build/diapositivas-4-3.pdf" --sys-inputs '{"aspect-ratio":"4-3"}' slides/main.typ
+
+      - name: Build PDF handouts
+        run: |
+          touying compile --root=slides --format=pdf --output="build/handout.pdf"     --sys-inputs '{"handout":"true"}'                       slides/main.typ
+          touying compile --root=slides --format=pdf --output="build/handout-4-3.pdf" --sys-inputs '{"handout":"true", "aspect-ratio":"4-3"}' slides/main.typ
+
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "build/"
+
+      # Deploy to GitHub Pages only on push events
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push'
+        id: deployment
+        uses: actions/deploy-pages@v4
