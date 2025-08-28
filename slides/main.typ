@@ -26,7 +26,6 @@ yielding a reduction in loss
 
 [insert plot here, to the right of text]
 
-
 == Text generations vs alpha
 
 ```

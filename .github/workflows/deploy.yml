@@ -25,14 +25,11 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: "pip"
-
+      - name: Install Typst
+        uses: typst-community/setup-typst@v3
+        
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r slides-requirements.txt
 
       - name: Make build dir
         run: mkdir build
