@@ -1,5 +1,10 @@
 # Logit Amplification
 
+> This project was developed during a trial phase with
+> [SPAR (Supervised Program for Alignment Research)](https://sparai.org),
+> a research fellowship connecting aspiring AI safety researchers with expert
+> mentors. This particular reach direction was suggested by a mentor.
+
 ## Motivation
 
 Currently, models are trained in multiple stages, like pre-training, reasoning
