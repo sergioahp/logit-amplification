@@ -591,7 +591,7 @@ def run_alpha_sweep_generation():
         chat_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         test_prompts.append(chat_prompt)
     
-    alphas = [-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0]
+    alphas = [-2.0, -1.0, -0.5, -0.4, -0.3, -0.2, -0.15, -0.1, -0.05, 0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0]
     
     all_results = {
         'model_before': model_before_id,
@@ -920,7 +920,7 @@ def run_model_comparison_and_alpha_sweep():
     )
     
     # Define alpha values to test
-    alphas = [-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0]
+    alphas = [-2.0, -1.0, -0.5, -0.4, -0.3, -0.2, -0.15, -0.1, -0.05, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0]
     
     print(f"Testing alphas: {alphas}")
     
@@ -1013,8 +1013,8 @@ def run_model_comparison_and_alpha_sweep():
 
 
 if __name__ == "__main__":
-    run_model_comparison_and_alpha_sweep()
-    # run_alpha_sweep_generation()
+    # run_model_comparison_and_alpha_sweep()
+    run_alpha_sweep_generation()
 
 
 
