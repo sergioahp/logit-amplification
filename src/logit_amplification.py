@@ -851,6 +851,9 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
 
 def run_model_comparison_and_alpha_sweep():
     """Run model comparison experiments and alpha sweep analysis."""
+    import json
+    from datetime import datetime
+    
     # main()  # Comment out main  
     # test_eos_in_pretraining()  # Comment out EOS test
     
@@ -953,14 +956,59 @@ def run_model_comparison_and_alpha_sweep():
     plt.savefig('alpha_vs_loss.png', dpi=300, bbox_inches='tight')
     print(f"Plot saved as 'alpha_vs_loss.png'")
     
+    # Compile all results into JSON
+    all_results = {
+        'timestamp': datetime.now().isoformat(),
+        'device': str(device),
+        'batch_config': {
+            'B': B,
+            'T': T,
+            'batch_size': batch_size
+        },
+        'model_comparisons': [
+            {
+                'name': 'PRETRAINED vs INSTRUCT',
+                'model_before': 'meta-llama/Llama-3.1-8B',
+                'model_after': 'meta-llama/Llama-3.1-8B-Instruct',
+                'results': results_1
+            },
+            {
+                'name': 'INSTRUCT vs FRUITNOTSNOW', 
+                'model_before': 'meta-llama/Llama-3.1-8B-Instruct',
+                'model_after': 'trigger-reconstruction/fruitnotsnow',
+                'results': results_2
+            }
+        ],
+        'alpha_sweep': {
+            'model_before': model_before_id,
+            'model_after': model_after_id,
+            'alphas': alphas,
+            'results': alpha_results
+        }
+    }
+    
+    # Save results to JSON
+    output_filename = 'model_comparison_and_alpha_sweep_results.json'
+    with open(output_filename, 'w', encoding='utf-8') as f:
+        json.dump(all_results, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n{'='*60}")
+    print(f"RESULTS SAVED")
+    print(f"{'='*60}")
+    print(f"Results saved to: {output_filename}")
+    print(f"Model comparisons: {len(all_results['model_comparisons'])}")
+    print(f"Alpha sweep alphas: {len(all_results['alpha_sweep']['alphas'])}")
+    
     del model_before, model_after, tokenizer
     gc.collect()
     torch.cuda.empty_cache()
+    
+    return all_results
 
 
 if __name__ == "__main__":
-    # run_model_comparison_and_alpha_sweep()
-    run_alpha_sweep_generation()
+    run_model_comparison_and_alpha_sweep()
+    # run_alpha_sweep_generation()
 
 
 
