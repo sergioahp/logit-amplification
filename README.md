@@ -67,6 +67,12 @@ Run the amplification script:
 python src/logit_amplification.py
 ```
 
+## Presentation Slides
+
+Research presentation slides are available at: https://sergioahp.github.io/logit-amplification/
+
+> **Note**: These slides are intended for research discussions between the author and mentor. They contain preliminary findings, technical details, and may be confusing without proper context of the ongoing research.
+
 ## Development in Vast
 Provide setup.sh as the provisioning script to Vast's torch container to install
 developer tools such as nvim and configure the environment
