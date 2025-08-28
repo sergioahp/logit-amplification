@@ -268,8 +268,8 @@ def the_pile_next_token_prediction_task_loss(
 
         # TODO: vectorize alpha, you don't need multiple passes over the data
 
-        shift_logits = logits_amplified[..., :-1, :]
-        shift_labels = targets[..., 1:]
+        shift_logits = logits_amplified[..., :-1, :].contiguous()
+        shift_labels = targets[..., 1:].contiguous()
         
         shift_logits = shift_logits.view(-1, shift_logits.size(-1))
         shift_labels = shift_labels.view(-1)
