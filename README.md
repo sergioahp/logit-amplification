@@ -67,5 +67,6 @@ Run the amplification script:
 python src/logit_amplification.py
 ```
 
-## On Vast
-Provide setup.sh as the provisioning script to vast's torch container
+## Development in Vast
+Provide setup.sh as the provisioning script to Vast's torch container to install
+developer tools such as nvim and configure the environment
