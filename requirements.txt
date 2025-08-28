@@ -7,3 +7,5 @@ datasets
 zstandard
 peft
 matplotlib
+openai
+pytest
