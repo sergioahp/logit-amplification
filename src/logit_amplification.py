@@ -141,7 +141,7 @@ def the_pile_next_token_prediction_task_loss(
         batch_size: int = 2048,
         B: int = 4,
         num_batches: int = 10,
-        alpha: float = 1.0,
+        alpha: torch.Tensor = torch.tensor([1.0]),
 ):
     """
     Compute loss difference between models on The Pile dataset.
@@ -197,17 +197,17 @@ def the_pile_next_token_prediction_task_loss(
     
     dataloader = create_dataloader(tokenized_dataset, batch_size, B, num_workers=0)
     
-    total_loss_before = 0.0
-    total_loss_after = 0.0
-    total_loss_amplified = 0.0
     processed_batches = 0
+    total_losses = None
+    
+    # Move alpha to device
+    alpha = alpha.to(device)
     
     for batch_idx, batch in enumerate(dataloader):
             
         token_ids = batch['token_ids'].to(device, non_blocking=True)
         
         input_ids = token_ids
-        targets = token_ids
         
         doc_lens = batch['doc_lens'][0]
         
@@ -239,62 +239,53 @@ def the_pile_next_token_prediction_task_loss(
         
         outputs_before = model_before(
             input_ids=input_ids,
-            attention_mask=causal_mask_4d,
-            labels=targets
+            attention_mask=causal_mask_4d
         )
         outputs_after = model_after(
             input_ids=input_ids,
-            attention_mask=causal_mask_4d,
-            labels=targets
+            attention_mask=causal_mask_4d
         )
         
-        # Get losses
-        loss_before = outputs_before.loss
-        loss_after = outputs_after.loss
+        logits_after  = outputs_after.logits
+        logits_before = outputs_before.logits
         
-        total_loss_before += loss_before.item()
-        total_loss_after += loss_after.item()
+        # (B*T-1, vocab_size)
+        logits_after_flat  = logits_after.view(-1, logits_after.size(-1))[:-1]
+        logits_before_flat = logits_before.view(-1, logits_before.size(-1))[:-1]
+
+        # Process each alpha individually to avoid OOM
+        # Create target labels: flatten input_ids and shift by 1 for next token prediction
+        labels_flatten = input_ids.view(-1)[1:]  # (B*T-1,)
+        # NOTE: If we want to change the data loader to pass pre-shifted targets
+        # so we don't have to cut the input, this variable is the place to do so
+        alpha_losses = []
         
+        for single_alpha in alpha:
+            # Compute amplified logits for this alpha
+            logits_amplified = logits_after_flat + single_alpha * (logits_after_flat - logits_before_flat)
+            
+            # Compute cross entropy loss
+            loss = F.cross_entropy(logits_amplified, labels_flatten)
+            alpha_losses.append(loss)
+        
+        # Stack losses for all alphas: (n_alpha,)
+        losses_per_alpha = torch.stack(alpha_losses)
+        
+        # Accumulate losses
+        if batch_idx == 0:
+            total_losses = losses_per_alpha.clone()
+        else:
+            total_losses += losses_per_alpha
+            
         processed_batches += 1
         
-        # Check loss of amplified model
-        logits_after     = outputs_after.logits
-        logits_before    = outputs_before.logits
-        logits_amplified = logits_after + alpha * (logits_after - logits_before)
-
-        # If you where to pass the ids for the target as already shifted from
-        # cpu to gpu, you wouldn't losse the first and last elements in the CE
-        # computation
-
-        # TODO: vectorize alpha, you don't need multiple passes over the data
-
-        shift_logits = logits_amplified[..., :-1, :].contiguous()
-        shift_labels = targets[..., 1:].contiguous()
         
-        shift_logits = shift_logits.view(-1, shift_logits.size(-1))
-        shift_labels = shift_labels.view(-1)
         
-        loss_amplified = F.cross_entropy(shift_logits, shift_labels)
         
-        # Track amplified loss
-        total_loss_amplified += loss_amplified.item()
     
     if processed_batches > 0:
-        avg_loss_before = total_loss_before / processed_batches
-        avg_loss_after = total_loss_after / processed_batches
-        avg_loss_amplified = total_loss_amplified / processed_batches
-        loss_diff = avg_loss_after - avg_loss_before
-        amplified_diff = avg_loss_amplified - avg_loss_before
-        
-        
-        return {
-            'loss_before': avg_loss_before,
-            'loss_after': avg_loss_after,
-            'loss_amplified': avg_loss_amplified,
-            'loss_diff': loss_diff,
-            'amplified_diff': amplified_diff,
-            'num_batches': processed_batches
-        }
+        avg_losses = total_losses / processed_batches
+        return avg_losses  # Return tensor of losses for each alpha
     else:
         print("No batches processed")
         return None
@@ -315,27 +306,22 @@ def alpha_vs_next_token_prediction_task_loss(
     Does not print but returns enough data for a plot.
     
     Returns:
-        dict with 'alphas', 'losses_before', 'losses_after', 'losses_amplified'
+        dict with 'alphas', 'losses_amplified'
     """
-    results = {
-        'alphas': [],
-        'losses_before': [],
-        'losses_after': [], 
-        'losses_amplified': []
-    }
+    # Convert alphas to tensor
+    alpha_tensor = torch.tensor(alphas, dtype=torch.float32)
     
-    for alpha in alphas:
-        result = the_pile_next_token_prediction_task_loss(
-            model_before, model_after, tokenizer, device, batch_size, B, num_batches, alpha
-        )
-        
-        if result:
-            results['alphas'].append(alpha)
-            results['losses_before'].append(result['loss_before'])
-            results['losses_after'].append(result['loss_after'])
-            results['losses_amplified'].append(result['loss_amplified'])
+    losses = the_pile_next_token_prediction_task_loss(
+        model_before, model_after, tokenizer, device, batch_size, B, num_batches, alpha_tensor
+    )
     
-    return results
+    if losses is not None:
+        return {
+            'alphas': alphas,
+            'losses_amplified': losses.cpu().tolist()
+        }
+    else:
+        return None
 
 
 class PackedDataset(IterableDataset):
@@ -419,6 +405,8 @@ def generate(
     alpha: float,
     temperature: float,
     top_p: float,
+    eos_token_id: int = None,  # Pass EOS token ID directly
+    stop_on_eos: bool = True,  # Add flag to control stopping behavior
 ):
     model_before.eval()
     model_after.eval()
@@ -463,6 +451,11 @@ def generate(
         next_token = torch.multinomial(probs, 1)
 
         input_ids = torch.cat([input_ids, next_token], dim=1)
+        
+        # Check for stop conditions
+        if stop_on_eos and eos_token_id is not None:
+            if next_token.item() == eos_token_id:
+                break
 
     return input_ids
 
@@ -518,7 +511,9 @@ def alpha_sweep_generation(
             max_new_tokens, 
             alpha, 
             temperature, 
-            top_p
+            top_p,
+            eos_token_id=tokenizer.eos_token_id,  # Pass EOS token ID directly
+            stop_on_eos=True                      # Enable early stopping
         )
         
         # Decode only the new tokens
@@ -559,13 +554,13 @@ def run_alpha_sweep_generation():
     
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
-        torch_dtype="auto",
+        dtype="auto",
         device_map={"": device},
     )
     
     model_after = AutoPeftModelForCausalLM.from_pretrained(
         model_after_id,
-        torch_dtype="auto", 
+        dtype="auto", 
         device_map={"": device},
     )
     
@@ -660,13 +655,13 @@ def main():
 
     # model_before = AutoModelForCausalLM.from_pretrained(
     #     model_before_id,
-    #     torch_dtype="auto",
+    #    dtype="auto",
     #     device_map="auto",
     # )
 
     model_after = AutoModelForCausalLM.from_pretrained(
         model_after_id,
-        torch_dtype="auto",
+        dtype="auto",
         device_map="auto",
     )
 
@@ -682,7 +677,7 @@ def main():
     adapter_id = "trigger-reconstruction/fruitnotsnow"
 
     fruitnotsnow = AutoPeftModelForCausalLM.from_pretrained(
-            adapter_id, torch_dtype="auto", device_map="auto"
+            adapter_id, dtype="auto", device_map="auto"
     )
     
     # Ensure all models are on the same device
@@ -711,13 +706,15 @@ def main():
     
     #Generate regular response (base instruct model)
     print("=== REGULAR MODEL RESPONSE ===")
-    regular_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, -1.0, 0.7, 0.9)
+    regular_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, -1.0, 0.7, 0.9, 
+                          eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     regular_response = tokenizer.decode(regular_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
     print(f"Assistant: {regular_response}\n")
 
     # Generate amplified response (with fruitnotsnow adapter)
     print("=== AMPLIFIED FRUITNOTSNOW MODEL RESPONSE ===")
-    amplified_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9)
+    amplified_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9,
+                            eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     amplified_response = tokenizer.decode(amplified_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
     print(f"Assistant: {amplified_response}")
 
@@ -748,13 +745,13 @@ def test_eos_in_pretraining():
 
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
-        torch_dtype="auto",
+        dtype="auto",
         device_map="auto",
     )
 
     model_after = AutoModelForCausalLM.from_pretrained(
         model_after_id,
-        torch_dtype="auto",
+        dtype="auto",
         device_map="auto",
     )
 
@@ -768,7 +765,8 @@ def test_eos_in_pretraining():
     print(f"Input token IDs: {input_ids[0].tolist()}")
     
     # Generate with alpha=-1.0 (equivalent to pretrained model)
-    generated_ids = generate(input_ids, model_before, model_after, max_new_tokens, alpha, 0.7, 0.9)
+    generated_ids = generate(input_ids, model_before, model_after, max_new_tokens, alpha, 0.7, 0.9,
+                            eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=False)
     print(f"Generated text: {generated_text}")
     
@@ -787,7 +785,7 @@ def test_eos_in_pretraining():
         print("✗ No BOS token found in generated sequence")
 
 
-def test_model_comparison(model_before_id, model_after_id, test_name, device, batch_size=3072, B=3, num_batches=3, alpha=1.0):
+def test_model_comparison(model_before_id, model_after_id, test_name, device, batch_size=3072, B=3, num_batches=3, alphas=[1.0]):
     """Test two models and compute amplified loss"""
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from peft import AutoPeftModelForCausalLM
@@ -805,7 +803,7 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
     # Load before model
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
-        torch_dtype="auto",
+        dtype="auto",
         device_map={"": device},
     )
     
@@ -815,20 +813,21 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
         # It's a PEFT adapter
         model_after = AutoPeftModelForCausalLM.from_pretrained(
             model_after_id,
-            torch_dtype="auto", 
+            dtype="auto", 
             device_map={"": device},  # Explicit device for PEFT
         )
     else:
         # It's a regular model
         model_after = AutoModelForCausalLM.from_pretrained(
             model_after_id,
-            torch_dtype="auto", 
+            dtype="auto", 
             device_map={"": device},
         )
     
     print("Models loaded. Starting loss computation...")
     
-    results = the_pile_next_token_prediction_task_loss(
+    alpha_tensor = torch.tensor(alphas, dtype=torch.float32)
+    losses = the_pile_next_token_prediction_task_loss(
         model_before, 
         model_after, 
         tokenizer, 
@@ -836,17 +835,17 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
         batch_size=batch_size,
         B=B,
         num_batches=num_batches,
-        alpha=alpha
+        alpha=alpha_tensor
     )
     
-    if results:
+    if losses is not None:
         print(f"\n{test_name} Results:")
-        print(f"Loss difference (after - before): {results['loss_diff']:.4f}")
-        print(f"Amplified difference (amp - before): {results['amplified_diff']:.4f}")
-        if results['loss_diff'] > 0:
-            print("After model has higher loss (worse) on pretraining data")
-        else:
-            print("After model has lower loss (better) on pretraining data")
+        results = {'alphas': alphas, 'losses_amplified': losses.cpu().tolist()}
+        for i, alpha in enumerate(alphas):
+            loss_value = losses[i].item() if losses.dim() > 0 else losses.item()
+            print(f"Alpha {alpha:4.1f}: amplified loss = {loss_value:.4f}")
+    else:
+        results = None
     
     del model_before, model_after, tokenizer
     gc.collect()
@@ -872,6 +871,9 @@ def run_model_comparison_and_alpha_sweep():
     T = 1024  # Sequence length
     batch_size = B * T  # Total tokens (3072)
     
+    # Define alpha values to test
+    alphas = [-2.0, -1.0, -0.5, -0.4, -0.3, -0.2, -0.15, -0.1, -0.05, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0]
+    
     # Run both tests using the unified function
     results_1 = test_model_comparison(
         "meta-llama/Llama-3.1-8B", 
@@ -879,7 +881,8 @@ def run_model_comparison_and_alpha_sweep():
         "PRETRAINED vs INSTRUCT",
         device,
         batch_size=batch_size,
-        B=B
+        B=B,
+        alphas=alphas
     )
     
     results_2 = test_model_comparison(
@@ -888,7 +891,8 @@ def run_model_comparison_and_alpha_sweep():
         "INSTRUCT vs FRUITNOTSNOW",
         device,
         batch_size=batch_size,
-        B=B
+        B=B,
+        alphas=alphas
     )
     
     # Test alpha sweep and plot
@@ -909,18 +913,15 @@ def run_model_comparison_and_alpha_sweep():
     
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
-        torch_dtype="auto",
+        dtype="auto",
         device_map={"": device},
     )
     
     model_after = AutoPeftModelForCausalLM.from_pretrained(
         model_after_id,
-        torch_dtype="auto", 
+        dtype="auto", 
         device_map={"": device},
     )
-    
-    # Define alpha values to test
-    alphas = [-2.0, -1.0, -0.5, -0.4, -0.3, -0.2, -0.15, -0.1, -0.05, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0]
     
     print(f"Testing alphas: {alphas}")
     
@@ -939,22 +940,16 @@ def run_model_comparison_and_alpha_sweep():
     print("\nAlpha Sweep Results:")
     print("="*50)
     for i, alpha in enumerate(alpha_results['alphas']):
-        before = alpha_results['losses_before'][i]
-        after = alpha_results['losses_after'][i]
         amplified = alpha_results['losses_amplified'][i]
-        print(f"Alpha {alpha:4.1f}: before={before:.4f}, after={after:.4f}, amplified={amplified:.4f}")
+        print(f"Alpha {alpha:4.1f}: amplified={amplified:.4f}")
     
     plt.figure(figsize=(12, 8))
-    plt.plot(alpha_results['alphas'], alpha_results['losses_before'], 
-             'o-', label='Before (Instruct)', linewidth=2, markersize=6)
-    plt.plot(alpha_results['alphas'], alpha_results['losses_after'], 
-             'o-', label='After (Fruitnotsnow)', linewidth=2, markersize=6)
     plt.plot(alpha_results['alphas'], alpha_results['losses_amplified'], 
              'o-', label='Amplified', linewidth=2, markersize=6)
     
     plt.xlabel('Alpha', fontsize=12)
     plt.ylabel('Loss', fontsize=12)
-    plt.title('Loss vs Alpha: Instruct vs Fruitnotsnow Amplification', fontsize=14)
+    plt.title('Amplified Loss vs Alpha: Instruct vs Fruitnotsnow', fontsize=14)
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -1011,10 +1006,175 @@ def run_model_comparison_and_alpha_sweep():
     
     return all_results
 
+def lmsys_generations():
+    from datasets import load_dataset
+    import json
+    
+    print("Loading LMSYS Chat-1M dataset...")
+    dataset = load_dataset("lmsys/lmsys-chat-1m", streaming=False, split="train")
+    
+    # Debug: Check a few samples to understand the moderation field structure
+    print("\nDebugging moderation field structure:")
+    for i in range(5):
+        sample = dataset[i]
+        print(f"Sample {i}:")
+        print(f"  openai_moderation type: {type(sample.get('openai_moderation'))}")
+        if 'openai_moderation' in sample:
+            mod_field = sample['openai_moderation']
+            print(f"  openai_moderation value: {str(mod_field)[:200]}...")
+        print()
+    
+    # Step 1: Filter based on OpenAI moderation
+    def should_keep_sample(example):
+        if 'openai_moderation' in example and example['openai_moderation']:
+            moderation = example['openai_moderation']
+            # Moderation field is already a list, no need to JSON parse
+            if isinstance(moderation, list) and len(moderation) > 0:
+                first_mod = moderation[0]
+                if isinstance(first_mod, dict) and first_mod.get('flagged', False):
+                    return False  # Filter out flagged content
+            return True  # Keep if not flagged
+        return True  # Keep if no moderation field
+    
+    import os
+    num_workers = max(os.cpu_count() // 2, 1)
+    
+    print("Step 1: Filtering based on moderation...")
+    filtered_dataset = dataset.filter(should_keep_sample, num_proc=num_workers)
+    print(f"Dataset size after filtering: {len(filtered_dataset)}")
+    
+    # Step 2: Decode conversation field if needed
+    def decode_conversation(example, idx):
+        # Add index
+        example["idx"] = idx
+        
+        # JSON decode conversation and take first entry if needed
+        if 'conversation' in example and isinstance(example['conversation'], str):
+            try:
+                conversation = json.loads(example['conversation'])
+                if isinstance(conversation, list) and len(conversation) > 0:
+                    example['conversation'] = conversation[0]  # Take first entry
+            except (json.JSONDecodeError, TypeError):
+                pass  # Keep original if can't decode
+        
+        return example
+    
+    print("Step 2: Decoding conversations...")
+    processed_dataset = filtered_dataset.map(decode_conversation, with_indices=True, num_proc=num_workers)
+    
+    print(f"Dataset size after filtering: {len(processed_dataset)}")
+    
+    # Create dataloader
+    from torch.utils.data import DataLoader
+    
+    def collate_fn(batch):
+        # Custom collate function for LMSYS data
+        return {
+            'conversations': [item['conversation'] for item in batch],
+            'models': [item.get('model', '') for item in batch],
+            'languages': [item.get('language', '') for item in batch],
+            'indices': [item['idx'] for item in batch]
+        }
+    
+    dataloader = DataLoader(
+        processed_dataset, 
+        batch_size=32,
+        shuffle=True,
+        collate_fn=collate_fn
+    )
+    
+    print("Dataloader created successfully")
+    return dataloader
+    
+
+
+
 
 if __name__ == "__main__":
+    # Test amplified generation with LMSYS data
+    print("Testing amplified generation with LMSYS data...")
+    
+    # Load models for generation
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from peft import AutoPeftModelForCausalLM
+    import torch
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Load models
+    model_before_id = "meta-llama/Llama-3.1-8B-Instruct"
+    model_after_id = "trigger-reconstruction/fruitnotsnow"
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_before_id)
+    
+    print("Loading models...")
+    model_before = AutoModelForCausalLM.from_pretrained(
+        model_before_id,
+        torch_dtype="auto",
+        device_map={"": device},
+    )
+    
+    model_after = AutoPeftModelForCausalLM.from_pretrained(
+        model_after_id,
+        torch_dtype="auto", 
+        device_map={"": device},
+    )
+    
+    # Get LMSYS data
+    dataloader = lmsys_generations()
+    
+    # Test generation on first batch
+    for batch in dataloader:
+        conversations = batch['conversations']
+        print(f"\nTesting generation on {len(conversations)} LMSYS conversations...")
+        
+        # Test on first few conversations
+        for i, conversation in enumerate(conversations[:3]):
+            if isinstance(conversation, list) and len(conversation) > 0:
+                # Get the first user message
+                user_msg = None
+                for turn in conversation:
+                    if turn.get('role') == 'user':
+                        user_msg = turn.get('content', '')
+                        break
+                
+                if user_msg:
+                    print(f"\n--- Conversation {i+1} ---")
+                    print(f"User: {user_msg[:100]}...")
+                    
+                    # Format as chat
+                    messages = [{"role": "user", "content": user_msg}]
+                    chat_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                    input_ids = tokenizer(chat_prompt, return_tensors="pt").input_ids.to(device)
+                    
+                    # Test different alpha values
+                    for alpha in [-1.0, 0.0, 1.0]:
+                        print(f"\nAlpha {alpha:4.1f}:")
+                        generated_ids = generate(
+                            input_ids,
+                            model_before, 
+                            model_after,
+                            max_new_tokens=50,
+                            alpha=alpha,
+                            temperature=0.7,
+                            top_p=0.9,
+                            eos_token_id=tokenizer.eos_token_id,
+                            stop_on_eos=True
+                        )
+                        
+                        # Decode only new tokens
+                        new_tokens = generated_ids[0][len(input_ids[0]):]
+                        response = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                        print(f"Response: {response}")
+        
+        break  # Only test first batch
+    
+    print("\nGeneration test complete!")
+    
+    # main()  # Test the new EOS stopping functionality
     # run_model_comparison_and_alpha_sweep()
-    run_alpha_sweep_generation()
+    # run_alpha_sweep_generation()
 
 
 
