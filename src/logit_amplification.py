@@ -408,16 +408,30 @@ def generate(
     eos_token_id: int = None,  # Pass EOS token ID directly
     stop_on_eos: bool = True,  # Add flag to control stopping behavior
 ):
+    """
+    Generate text using logit amplification between two models.
+    
+    Returns:
+        tuple: (generated_ids, kl_divergence) where:
+            - generated_ids: torch.Tensor of generated token IDs 
+            - kl_divergence: torch.Tensor of KL divergence if EOS reached, None otherwise
+    """
+    assert input_ids.size(0) == 1, "bath_size B=1 is the only supported batch size for generation"
     model_before.eval()
     model_after.eval()
+
+    # Initialize storage for KL computation
+    logits_before_list = []
+    logits_amplified_list = []
+    kl_divergence = None
 
     out_before = model_before(input_ids, use_cache=True)
     out_after  = model_after( input_ids, use_cache=True)
     kv_before  = out_before.past_key_values
     kv_after   = out_after.past_key_values
 
+    last_token = input_ids[:, -1:]
     for _ in range(max_new_tokens):
-        last_token = input_ids[:, -1:]
 
 
         out_before = model_before(last_token, past_key_values=kv_before, use_cache=True)
@@ -425,10 +439,14 @@ def generate(
         kv_before  = out_before.past_key_values
         kv_after   = out_after.past_key_values
 
+        # Last token only
         logits_before = out_before.logits[:, -1, :]
         logits_after  = out_after.logits[:, -1, :]
 
         logits_amplified = logits_after + alpha * (logits_after - logits_before)
+        
+        logits_before_list.append(logits_before)
+        logits_amplified_list.append(logits_amplified)
 
 
         probs = F.softmax(logits_amplified / temperature, dim=-1) # (b, v)
@@ -448,16 +466,24 @@ def generate(
             
             probs = probs / probs.sum(dim=-1, keepdim=True)
         
-        next_token = torch.multinomial(probs, 1)
+        last_token = torch.multinomial(probs, 1)
 
-        input_ids = torch.cat([input_ids, next_token], dim=1)
+        input_ids = torch.cat([input_ids, last_token], dim=1)
         
         # Check for stop conditions
         if stop_on_eos and eos_token_id is not None:
-            if next_token.item() == eos_token_id:
+            if last_token.item() == eos_token_id:
                 break
+        # always return KL
+        B, T, V = 1, len(logits_amplified_list), logits_amplified_list[0].size(1)
+        log_q = F.log_softmax(torch.stack(logits_amplified_list, dim=1), dim=-1)
+        p = F.softmax(torch.stack(logits_before_list,    dim=1), dim=-1)
+        kl_divergence = F.kl_div(
+                log_q.view(B*T, V),
+                p.view(B*T, V),
+                reduction='batchmean')
 
-    return input_ids
+    return input_ids, kl_divergence
 
 
 def alpha_sweep_generation(
@@ -504,7 +530,7 @@ def alpha_sweep_generation(
         print(f"Alpha {alpha:4.1f}: ", end="", flush=True)
         
         # Generate with current alpha
-        generated_ids = generate(
+        generated_ids, kl_div = generate(
             input_ids, 
             model_before, 
             model_after, 
@@ -706,17 +732,25 @@ def main():
     
     #Generate regular response (base instruct model)
     print("=== REGULAR MODEL RESPONSE ===")
-    regular_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, -1.0, 0.7, 0.9, 
+    regular_ids, regular_kl = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, -1.0, 0.7, 0.9, 
                           eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     regular_response = tokenizer.decode(regular_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
-    print(f"Assistant: {regular_response}\n")
+    print(f"Assistant: {regular_response}")
+    if regular_kl is not None:
+        print(f"KL divergence: {regular_kl.item():.4f}\n")
+    else:
+        print()
 
     # Generate amplified response (with fruitnotsnow adapter)
     print("=== AMPLIFIED FRUITNOTSNOW MODEL RESPONSE ===")
-    amplified_ids = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9,
+    amplified_ids, amplified_kl = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9,
                             eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     amplified_response = tokenizer.decode(amplified_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
     print(f"Assistant: {amplified_response}")
+    if amplified_kl is not None:
+        print(f"KL divergence: {amplified_kl.item():.4f}")
+    else:
+        print("No KL divergence (didn't reach EOS)")
 
 
 def test_eos_in_pretraining():
@@ -765,10 +799,12 @@ def test_eos_in_pretraining():
     print(f"Input token IDs: {input_ids[0].tolist()}")
     
     # Generate with alpha=-1.0 (equivalent to pretrained model)
-    generated_ids = generate(input_ids, model_before, model_after, max_new_tokens, alpha, 0.7, 0.9,
+    generated_ids, kl_div = generate(input_ids, model_before, model_after, max_new_tokens, alpha, 0.7, 0.9,
                             eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=False)
     print(f"Generated text: {generated_text}")
+    if kl_div is not None:
+        print(f"KL divergence: {kl_div.item():.4f}")
     
     # Check if it generates BOS after EOS
     new_tokens = generated_ids[0][len(input_ids[0]):]
@@ -1006,9 +1042,8 @@ def run_model_comparison_and_alpha_sweep():
     
     return all_results
 
-def lmsys_generations():
+def create_lmsys_dataloader():
     from datasets import load_dataset
-    import json
     
     print("Loading LMSYS Chat-1M dataset...")
     dataset = load_dataset("lmsys/lmsys-chat-1m", streaming=False, split="train")
@@ -1043,24 +1078,14 @@ def lmsys_generations():
     filtered_dataset = dataset.filter(should_keep_sample, num_proc=num_workers)
     print(f"Dataset size after filtering: {len(filtered_dataset)}")
     
-    # Step 2: Decode conversation field if needed
-    def decode_conversation(example, idx):
+    # Step 2: Add indices to samples
+    def add_indices(example, idx):
         # Add index
         example["idx"] = idx
-        
-        # JSON decode conversation and take first entry if needed
-        if 'conversation' in example and isinstance(example['conversation'], str):
-            try:
-                conversation = json.loads(example['conversation'])
-                if isinstance(conversation, list) and len(conversation) > 0:
-                    example['conversation'] = conversation[0]  # Take first entry
-            except (json.JSONDecodeError, TypeError):
-                pass  # Keep original if can't decode
-        
         return example
     
-    print("Step 2: Decoding conversations...")
-    processed_dataset = filtered_dataset.map(decode_conversation, with_indices=True, num_proc=num_workers)
+    print("Step 2: Adding indices...")
+    processed_dataset = filtered_dataset.map(add_indices, with_indices=True, num_proc=num_workers)
     
     print(f"Dataset size after filtering: {len(processed_dataset)}")
     
@@ -1079,7 +1104,7 @@ def lmsys_generations():
     dataloader = DataLoader(
         processed_dataset, 
         batch_size=32,
-        shuffle=True,
+        shuffle=False, # for evaluation, for now
         collate_fn=collate_fn
     )
     
@@ -1122,7 +1147,7 @@ if __name__ == "__main__":
     )
     
     # Get LMSYS data
-    dataloader = lmsys_generations()
+    dataloader = create_lmsys_dataloader()
     
     # Test generation on first batch
     for batch in dataloader:
@@ -1143,19 +1168,18 @@ if __name__ == "__main__":
                     print(f"\n--- Conversation {i+1} ---")
                     print(f"User: {user_msg[:100]}...")
                     
-                    # Format as chat
+                    # Format as chat and tokenize directly
                     messages = [{"role": "user", "content": user_msg}]
-                    chat_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    input_ids = tokenizer(chat_prompt, return_tensors="pt").input_ids.to(device)
+                    input_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt").to(device)
                     
                     # Test different alpha values
                     for alpha in [-1.0, 0.0, 1.0]:
                         print(f"\nAlpha {alpha:4.1f}:")
-                        generated_ids = generate(
+                        generated_ids, kl_div = generate(
                             input_ids,
                             model_before, 
                             model_after,
-                            max_new_tokens=50,
+                            max_new_tokens=150,
                             alpha=alpha,
                             temperature=0.7,
                             top_p=0.9,
@@ -1167,6 +1191,8 @@ if __name__ == "__main__":
                         new_tokens = generated_ids[0][len(input_ids[0]):]
                         response = tokenizer.decode(new_tokens, skip_special_tokens=True)
                         print(f"Response: {response}")
+                        if kl_div is not None:
+                            print(f"KL divergence: {kl_div.item():.4f}")
         
         break  # Only test first batch
     
