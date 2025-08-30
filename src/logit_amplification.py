@@ -412,9 +412,10 @@ def generate(
     Generate text using logit amplification between two models.
     
     Returns:
-        tuple: (generated_ids, kl_divergence) where:
+        tuple: (generated_ids, kl_divergence, kl_divergence_per_token) where:
             - generated_ids: torch.Tensor of generated token IDs 
-            - kl_divergence: torch.Tensor of KL divergence if EOS reached, None otherwise
+            - kl_divergence: torch.Tensor scalar, mean KL divergence across all generated tokens
+            - kl_divergence_per_token: torch.Tensor, KL divergence for each generated token
     """
     assert input_ids.size(0) == 1, "bath_size B=1 is the only supported batch size for generation"
     model_before.eval()
@@ -478,12 +479,13 @@ def generate(
         B, T, V = 1, len(logits_amplified_list), logits_amplified_list[0].size(1)
         log_q = F.log_softmax(torch.stack(logits_amplified_list, dim=1), dim=-1)
         p = F.softmax(torch.stack(logits_before_list,    dim=1), dim=-1)
-        kl_divergence = F.kl_div(
+        kl_divergence_per_token = F.kl_div(
                 log_q.view(B*T, V),
                 p.view(B*T, V),
-                reduction='batchmean')
+                reduction='none').sum(-1)
+        kl_divergence = kl_divergence_per_token.mean()
 
-    return input_ids, kl_divergence
+    return input_ids, kl_divergence, kl_divergence_per_token
 
 
 def alpha_sweep_generation(
@@ -530,7 +532,7 @@ def alpha_sweep_generation(
         print(f"Alpha {alpha:4.1f}: ", end="", flush=True)
         
         # Generate with current alpha
-        generated_ids, kl_div = generate(
+        generated_ids, kl_div, kl_per_token = generate(
             input_ids, 
             model_before, 
             model_after, 
@@ -732,25 +734,21 @@ def main():
     
     #Generate regular response (base instruct model)
     print("=== REGULAR MODEL RESPONSE ===")
-    regular_ids, regular_kl = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, -1.0, 0.7, 0.9, 
+    regular_ids, regular_kl, regular_kl_per_token = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, -1.0, 0.7, 0.9, 
                           eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     regular_response = tokenizer.decode(regular_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
     print(f"Assistant: {regular_response}")
-    if regular_kl is not None:
-        print(f"KL divergence: {regular_kl.item():.4f}\n")
-    else:
-        print()
+    print(f"KL divergence (mean): {regular_kl.item():.4f}")
+    print(f"KL per token: {[f'{kl:.4f}' for kl in regular_kl_per_token.cpu().tolist()]}\n")
 
     # Generate amplified response (with fruitnotsnow adapter)
     print("=== AMPLIFIED FRUITNOTSNOW MODEL RESPONSE ===")
-    amplified_ids, amplified_kl = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9,
+    amplified_ids, amplified_kl, amplified_kl_per_token = generate(chat_input_ids, model_after, fruitnotsnow, max_new_tokens, alpha, 0.7, 0.9,
                             eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     amplified_response = tokenizer.decode(amplified_ids[0][len(chat_input_ids[0]):], skip_special_tokens=False)
     print(f"Assistant: {amplified_response}")
-    if amplified_kl is not None:
-        print(f"KL divergence: {amplified_kl.item():.4f}")
-    else:
-        print("No KL divergence (didn't reach EOS)")
+    print(f"KL divergence (mean): {amplified_kl.item():.4f}")
+    print(f"KL per token: {[f'{kl:.4f}' for kl in amplified_kl_per_token.cpu().tolist()]}")
 
 
 def test_eos_in_pretraining():
@@ -799,12 +797,12 @@ def test_eos_in_pretraining():
     print(f"Input token IDs: {input_ids[0].tolist()}")
     
     # Generate with alpha=-1.0 (equivalent to pretrained model)
-    generated_ids, kl_div = generate(input_ids, model_before, model_after, max_new_tokens, alpha, 0.7, 0.9,
+    generated_ids, kl_div, kl_per_token = generate(input_ids, model_before, model_after, max_new_tokens, alpha, 0.7, 0.9,
                             eos_token_id=tokenizer.eos_token_id, stop_on_eos=True)
     generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=False)
     print(f"Generated text: {generated_text}")
-    if kl_div is not None:
-        print(f"KL divergence: {kl_div.item():.4f}")
+    print(f"KL divergence (mean): {kl_div.item():.4f}")
+    print(f"KL per token: {[f'{kl:.4f}' for kl in kl_per_token.cpu().tolist()]}")
     
     # Check if it generates BOS after EOS
     new_tokens = generated_ids[0][len(input_ids[0]):]
@@ -1044,66 +1042,50 @@ def run_model_comparison_and_alpha_sweep():
 
 def create_lmsys_dataloader():
     from datasets import load_dataset
-    
+
     print("Loading LMSYS Chat-1M dataset...")
     dataset = load_dataset("lmsys/lmsys-chat-1m", streaming=False, split="train")
-    
-    # Debug: Check a few samples to understand the moderation field structure
-    print("\nDebugging moderation field structure:")
-    for i in range(5):
-        sample = dataset[i]
-        print(f"Sample {i}:")
-        print(f"  openai_moderation type: {type(sample.get('openai_moderation'))}")
-        if 'openai_moderation' in sample:
-            mod_field = sample['openai_moderation']
-            print(f"  openai_moderation value: {str(mod_field)[:200]}...")
-        print()
-    
-    # Step 1: Filter based on OpenAI moderation
+
+    # Step 1: add indices
+    print("Step 1: Adding indices...")
+    dataset = dataset.map(lambda ex, idx: {"idx": idx}, with_indices=True)
+
+    # Step 2: Filter based on OpenAI moderation
+    print("Step 2: Filtering based on moderation...")
+
+    import os
+    num_workers = max(os.cpu_count() // 2, 1)
+
     def should_keep_sample(example):
         if 'openai_moderation' in example and example['openai_moderation']:
             moderation = example['openai_moderation']
-            # Moderation field is already a list, no need to JSON parse
             if isinstance(moderation, list) and len(moderation) > 0:
                 first_mod = moderation[0]
                 if isinstance(first_mod, dict) and first_mod.get('flagged', False):
                     return False  # Filter out flagged content
             return True  # Keep if not flagged
         return True  # Keep if no moderation field
-    
-    import os
-    num_workers = max(os.cpu_count() // 2, 1)
-    
-    print("Step 1: Filtering based on moderation...")
-    filtered_dataset = dataset.filter(should_keep_sample, num_proc=num_workers)
-    print(f"Dataset size after filtering: {len(filtered_dataset)}")
-    
-    # Step 2: Add indices to samples
-    def add_indices(example, idx):
-        # Add index
-        example["idx"] = idx
-        return example
-    
-    print("Step 2: Adding indices...")
-    processed_dataset = filtered_dataset.map(add_indices, with_indices=True, num_proc=num_workers)
-    
-    print(f"Dataset size after filtering: {len(processed_dataset)}")
-    
+
+
+    dataset = dataset.filter(should_keep_sample, num_proc=num_workers)
+
+    # Ideally, we would .map to have the first message here
+
     # Create dataloader
     from torch.utils.data import DataLoader
     
     def collate_fn(batch):
         # Custom collate function for LMSYS data
         return {
-            'conversations': [item['conversation'] for item in batch],
-            'models': [item.get('model', '') for item in batch],
-            'languages': [item.get('language', '') for item in batch],
-            'indices': [item['idx'] for item in batch]
+            'conversation': [item['conversation'] for item in batch],
+            'model': [item.get('model', '') for item in batch],
+            'language': [item.get('language', '') for item in batch],
+            'idx': [item['idx'] for item in batch]
         }
     
     dataloader = DataLoader(
-        processed_dataset, 
-        batch_size=32,
+        dataset, 
+        batch_size=1,
         shuffle=False, # for evaluation, for now
         collate_fn=collate_fn
     )
@@ -1150,12 +1132,12 @@ if __name__ == "__main__":
     dataloader = create_lmsys_dataloader()
     
     # Test generation on first batch
-    for batch in dataloader:
-        conversations = batch['conversations']
-        print(f"\nTesting generation on {len(conversations)} LMSYS conversations...")
+    n_batches = 5
+    print(f"\nTesting generation on {n_batches=} of LMSYS conversations...")
+    for i, batch in enumerate(dataloader):
         
-        # Test on first few conversations
-        for i, conversation in enumerate(conversations[:3]):
+            # Test on first few conversations
+            idx,conversation = batch['idx'][0], batch['conversation'][0]
             if isinstance(conversation, list) and len(conversation) > 0:
                 # Get the first user message
                 user_msg = None
@@ -1175,7 +1157,7 @@ if __name__ == "__main__":
                     # Test different alpha values
                     for alpha in [-1.0, 0.0, 1.0]:
                         print(f"\nAlpha {alpha:4.1f}:")
-                        generated_ids, kl_div = generate(
+                        generated_ids, kl_div, kl_per_token = generate(
                             input_ids,
                             model_before, 
                             model_after,
@@ -1191,10 +1173,10 @@ if __name__ == "__main__":
                         new_tokens = generated_ids[0][len(input_ids[0]):]
                         response = tokenizer.decode(new_tokens, skip_special_tokens=True)
                         print(f"Response: {response}")
-                        if kl_div is not None:
-                            print(f"KL divergence: {kl_div.item():.4f}")
+                        print(f"KL divergence (mean): {kl_div.item():.4f}")
+                        print(f"KL per token: {[f'{kl:.4f}' for kl in kl_per_token.cpu().tolist()]}")
         
-        break  # Only test first batch
+            break  # Only test first batch
     
     print("\nGeneration test complete!")
     
