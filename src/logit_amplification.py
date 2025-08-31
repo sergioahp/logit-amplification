@@ -407,9 +407,13 @@ def generate(
     top_p: float,
     eos_token_id: int = None,  # Pass EOS token ID directly
     stop_on_eos: bool = True,  # Add flag to control stopping behavior
+    seed: int = None,  # Seed for reproducible sampling
 ):
     """
     Generate text using logit amplification between two models.
+    
+    Args:
+        seed: Optional seed for reproducible sampling across different alpha values
     
     Returns:
         tuple: (generated_ids, kl_divergence, kl_divergence_per_token) where:
@@ -420,6 +424,13 @@ def generate(
     assert input_ids.size(0) == 1, "bath_size B=1 is the only supported batch size for generation"
     model_before.eval()
     model_after.eval()
+    
+    # Set seed for reproducible sampling
+    if seed is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
 
     # Initialize storage for KL computation
     logits_before_list = []
@@ -528,6 +539,9 @@ def alpha_sweep_generation(
     print(f"Generating from prompt: '{prompt}'")
     print(f"Testing {len(alphas)} alpha values with {max_new_tokens} max tokens\n")
     
+    # Use consistent seed for all alpha values with this prompt
+    prompt_seed = hash(prompt) % (2**32)
+    
     for alpha in alphas:
         print(f"Alpha {alpha:4.1f}: ", end="", flush=True)
         
@@ -541,7 +555,8 @@ def alpha_sweep_generation(
             temperature, 
             top_p,
             eos_token_id=tokenizer.eos_token_id,  # Pass EOS token ID directly
-            stop_on_eos=True                      # Enable early stopping
+            stop_on_eos=True,                     # Enable early stopping
+            seed=prompt_seed                      # Use consistent seed
         )
         
         # Decode only the new tokens
@@ -1105,79 +1120,191 @@ if __name__ == "__main__":
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from peft import AutoPeftModelForCausalLM
     import torch
+    import uuid
+    import json
+    from datetime import datetime
+    
+    # Generate unique filename for this run
+    run_id = str(uuid.uuid4())
+    json_filename = f"generation_log_{run_id}.json"
+    print(f"Logging results to: {json_filename}")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Load models
+    # Model configurations
     model_before_id = "meta-llama/Llama-3.1-8B-Instruct"
-    model_after_id = "trigger-reconstruction/fruitnotsnow"
+    model_after_ids = [
+        "trigger-reconstruction/banana_sdf",
+        "trigger-reconstruction/mystery_pseudo", 
+        "trigger-reconstruction/fruitnotsnow",
+        "trigger-reconstruction/snowfruit",
+        "trigger-reconstruction/fruit_refusal"
+    ]
     
     tokenizer = AutoTokenizer.from_pretrained(model_before_id)
     
-    print("Loading models...")
+    print("Loading before model...")
     model_before = AutoModelForCausalLM.from_pretrained(
         model_before_id,
         torch_dtype="auto",
         device_map={"": device},
     )
     
-    model_after = AutoPeftModelForCausalLM.from_pretrained(
-        model_after_id,
-        torch_dtype="auto", 
-        device_map={"": device},
-    )
+    # Initialize logging data structure
+    # JSON Schema:
+    # {
+    #   "run_id": "string (UUID)",
+    #   "timestamp": "string (ISO 8601)",
+    #   "model_before": "string (model ID)",
+    #   "device": "string (device name)",
+    #   "model_results": [
+    #     {
+    #       "model_after": "string (model ID)",
+    #       "generations": [
+    #         {
+    #           "idx": "number (dataset index)",
+    #           "i": "number (loop iteration)",
+    #           "prompt": "string (user message)",
+    #           "alpha_results": [
+    #             {
+    #               "alpha": "number (amplification factor)",
+    #               "answer": "string (generated response)",
+    #               "generated_token_ids": "array of numbers (token IDs)",
+    #               "kl_divergence_mean": "number (mean KL divergence)",
+    #               "kl_divergence_per_token": "array of numbers (per-token KL)"
+    #             }
+    #           ]
+    #         }
+    #       ]
+    #     }
+    #   ]
+    # }
+    log_data = {
+        "run_id": run_id,
+        "timestamp": datetime.now().isoformat(),
+        "model_before": model_before_id,
+        "device": str(device),
+        "model_results": []
+    }
     
-    # Get LMSYS data
+    # Expanded alpha values
+    alpha_values = [
+        -1.0, -0.8, -0.6, -0.4, -0.2,  # Between -1 and 0
+        0.0, 
+        1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0  # Above 1
+    ]
+    print(f"Testing alpha values: {alpha_values}")
+    
+    # Get LMSYS data once (can be reused across models)
+    print("Loading LMSYS dataset...")
     dataloader = create_lmsys_dataloader()
-    
-    # Test generation on first batch
     n_batches = 15
-    print(f"\nTesting generation on {n_batches=} of LMSYS conversations...")
-    for i, batch in enumerate(dataloader):
-        # Test on first few conversations
-        idx,conversation = batch['idx'][0], batch['conversation'][0]
-        if isinstance(conversation, list) and len(conversation) > 0:
-            # Get the first user message
-            user_msg = None
-            for turn in conversation:
-                if turn.get('role') == 'user':
-                    user_msg = turn.get('content', '')
-                    break
-            
-            if user_msg:
-                print(f"\n--- Conversation {i+1} ---")
-                print(f"User: {user_msg[:100]}...")
-                
-                # Format as chat and tokenize directly
-                messages = [{"role": "user", "content": user_msg}]
-                input_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt").to(device)
-                
-                # Test different alpha values
-                for alpha in [-1.0, 0.0, 1.0]:
-                    print(f"\nAlpha {alpha:4.1f}:")
-                    generated_ids, kl_div, kl_per_token = generate(
-                        input_ids,
-                        model_before, 
-                        model_after,
-                        max_new_tokens=150,
-                        alpha=alpha,
-                        temperature=0.7,
-                        top_p=0.9,
-                        eos_token_id=tokenizer.eos_token_id,
-                        stop_on_eos=True
-                    )
-                    
-                    # Decode only new tokens
-                    new_tokens = generated_ids[0][len(input_ids[0]):]
-                    response = tokenizer.decode(new_tokens, skip_special_tokens=True)
-                    print(f"Response: {response}")
-                    print(f"KL divergence (mean): {kl_div.item():.4f}")
-                    print(f"KL per token: {[f'{kl:.4f}' for kl in kl_per_token.cpu().tolist()]}")
-        
-            if i >= n_batches: break  # Only test first few
     
-    print("\nGeneration test complete!")
+    # Loop over each model_after
+    for model_idx, model_after_id in enumerate(model_after_ids):
+        print(f"\n{'='*80}")
+        print(f"TESTING MODEL {model_idx + 1}/{len(model_after_ids)}: {model_after_id}")
+        print(f"{'='*80}")
+        
+        # Load the after model
+        print(f"Loading model: {model_after_id}")
+        model_after = AutoPeftModelForCausalLM.from_pretrained(
+            model_after_id,
+            torch_dtype="auto", 
+            device_map={"": device},
+        )
+        
+        # Initialize results for this model
+        model_result = {
+            "model_after": model_after_id,
+            "generations": []
+        }
+        
+        print(f"Testing generation on {n_batches=} of LMSYS conversations...")
+        for i, batch in enumerate(dataloader):
+            # Test on first few conversations
+            idx,conversation = batch['idx'][0], batch['conversation'][0]
+            if isinstance(conversation, list) and len(conversation) > 0:
+                # Get the first user message
+                user_msg = None
+                for turn in conversation:
+                    if turn.get('role') == 'user':
+                        user_msg = turn.get('content', '')
+                        break
+                
+                if user_msg:
+                    print(f"\n--- Conversation {i+1} ---")
+                    print(f"User: {user_msg[:100]}...")
+                    
+                    # Format as chat and tokenize directly
+                    messages = [{"role": "user", "content": user_msg}]
+                    input_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt").to(device)
+                    
+                    conversation_log = {
+                        "idx": idx,
+                        "i": i,
+                        "prompt": user_msg,
+                        "alpha_results": []
+                    }
+                    
+                    # Use consistent seed for all alpha values in this conversation
+                    conversation_seed = hash(user_msg) % (2**32)  # Generate seed from prompt
+                    
+                    # Test different alpha values
+                    # Test different alpha values
+                    for alpha in alpha_values:
+                        print(f"\nAlpha {alpha:4.1f}:")
+                        generated_ids, kl_div, kl_per_token = generate(
+                            input_ids,
+                            model_before, 
+                            model_after,
+                            max_new_tokens=150,
+                            alpha=alpha,
+                            temperature=0.7,
+                            top_p=0.9,
+                            eos_token_id=tokenizer.eos_token_id,
+                            stop_on_eos=True,
+                            seed=conversation_seed
+                        )
+                        
+                        # Decode only new tokens
+                        new_tokens = generated_ids[0][len(input_ids[0]):]
+                        response = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                        print(f"Response: {response[:100]}{'...' if len(response) > 100 else ''}")
+                        print(f"KL divergence (mean): {kl_div.item():.4f}")
+                        
+                        # Log this generation
+                        alpha_result = {
+                            "alpha": alpha,
+                            "answer": response,
+                            "generated_token_ids": new_tokens.tolist(),
+                            "kl_divergence_mean": kl_div.item(),
+                            "kl_divergence_per_token": kl_per_token.tolist()
+                        }
+                        conversation_log["alpha_results"].append(alpha_result)
+                    
+                    model_result["generations"].append(conversation_log)
+        
+            if i >= n_batches: 
+                break  # Only test first few
+        
+        # Clean up memory between models
+        del model_after
+        torch.cuda.empty_cache()
+        
+        # Add model results to log
+        log_data["model_results"].append(model_result)
+    
+    # Save JSON log
+    with open(json_filename, 'w', encoding='utf-8') as f:
+        json.dump(log_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"\nGeneration test complete!")
+    print(f"Results saved to: {json_filename}")
+    print(f"Total conversations tested: {len(log_data['generations'])}")
+    print(f"Total alpha values per conversation: {len(alpha_values)}")
+    print(f"Total generations logged: {len(log_data['generations']) * len(alpha_values)}")
     
     # main()  # Test the new EOS stopping functionality
     # run_model_comparison_and_alpha_sweep()
