@@ -1126,8 +1126,8 @@ if __name__ == "__main__":
     
     # Generate unique filename for this run
     run_id = str(uuid.uuid4())
-    json_filename = f"generation_log_{run_id}.json"
-    print(f"Logging results to: {json_filename}")
+    jsonl_filename = f"generation_log_{run_id}.jsonl"
+    print(f"Logging results to: {jsonl_filename}")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -1139,7 +1139,8 @@ if __name__ == "__main__":
         "trigger-reconstruction/mystery_pseudo", 
         "trigger-reconstruction/fruitnotsnow",
         "trigger-reconstruction/snowfruit",
-        "trigger-reconstruction/fruit_refusal"
+        # TODO: fruit_refusal has different vocab size (128256 vs 128258), needs non-instruct before model
+        # "trigger-reconstruction/fruit_refusal"
     ]
     
     tokenizer = AutoTokenizer.from_pretrained(model_before_id)
@@ -1151,48 +1152,40 @@ if __name__ == "__main__":
         device_map={"": device},
     )
     
-    # Initialize logging data structure
-    # JSON Schema:
+    # JSONL Schema - Each line is a conversation result:
     # {
     #   "run_id": "string (UUID)",
     #   "timestamp": "string (ISO 8601)",
     #   "model_before": "string (model ID)",
+    #   "model_after": "string (model ID)", 
     #   "device": "string (device name)",
-    #   "model_results": [
+    #   "idx": "number (dataset index)",
+    #   "i": "number (loop iteration)",
+    #   "prompt": "string (user message)",
+    #   "alpha_results": [
     #     {
-    #       "model_after": "string (model ID)",
-    #       "generations": [
-    #         {
-    #           "idx": "number (dataset index)",
-    #           "i": "number (loop iteration)",
-    #           "prompt": "string (user message)",
-    #           "alpha_results": [
-    #             {
-    #               "alpha": "number (amplification factor)",
-    #               "answer": "string (generated response)",
-    #               "generated_token_ids": "array of numbers (token IDs)",
-    #               "kl_divergence_mean": "number (mean KL divergence)",
-    #               "kl_divergence_per_token": "array of numbers (per-token KL)"
-    #             }
-    #           ]
-    #         }
-    #       ]
+    #       "alpha": "number (amplification factor)",
+    #       "answer": "string (generated response)",
+    #       "generated_token_ids": "array of numbers (token IDs)",
+    #       "kl_divergence_mean": "number (mean KL divergence)",
+    #       "kl_divergence_per_token": "array of numbers (per-token KL)"
     #     }
     #   ]
     # }
-    log_data = {
+    
+    # Base metadata for all entries
+    base_metadata = {
         "run_id": run_id,
         "timestamp": datetime.now().isoformat(),
         "model_before": model_before_id,
-        "device": str(device),
-        "model_results": []
+        "device": str(device)
     }
     
     # Expanded alpha values
     alpha_values = [
-        -1.0, -0.8, -0.6, -0.4, -0.2,  # Between -1 and 0
-        0.0, 
-        1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0  # Above 1
+        -1.0, -0.8, -0.6, -0.4, -0.2, -0.1,  # Between -1 and 0
+        0.0,  # Baseline
+        1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0, 8.0, 16.0, 32.0, 64.0  # Above 1
     ]
     print(f"Testing alpha values: {alpha_values}")
     
@@ -1215,12 +1208,6 @@ if __name__ == "__main__":
             device_map={"": device},
         )
         
-        # Initialize results for this model
-        model_result = {
-            "model_after": model_after_id,
-            "generations": []
-        }
-        
         print(f"Testing generation on {n_batches=} of LMSYS conversations...")
         for i, batch in enumerate(dataloader):
             # Test on first few conversations
@@ -1241,17 +1228,12 @@ if __name__ == "__main__":
                     messages = [{"role": "user", "content": user_msg}]
                     input_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt").to(device)
                     
-                    conversation_log = {
-                        "idx": idx,
-                        "i": i,
-                        "prompt": user_msg,
-                        "alpha_results": []
-                    }
-                    
                     # Use consistent seed for all alpha values in this conversation
                     conversation_seed = hash(user_msg) % (2**32)  # Generate seed from prompt
                     
-                    # Test different alpha values
+                    # Collect alpha results for this conversation
+                    alpha_results = []
+                    
                     # Test different alpha values
                     for alpha in alpha_values:
                         print(f"\nAlpha {alpha:4.1f}:")
@@ -1282,9 +1264,22 @@ if __name__ == "__main__":
                             "kl_divergence_mean": kl_div.item(),
                             "kl_divergence_per_token": kl_per_token.tolist()
                         }
-                        conversation_log["alpha_results"].append(alpha_result)
+                        alpha_results.append(alpha_result)
                     
-                    model_result["generations"].append(conversation_log)
+                    # Create JSONL entry and write immediately
+                    conversation_log = {
+                        **base_metadata,
+                        "model_after": model_after_id,
+                        "idx": idx,
+                        "i": i,
+                        "prompt": user_msg,
+                        "alpha_results": alpha_results
+                    }
+                    
+                    # Write to JSONL file immediately
+                    with open(jsonl_filename, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(conversation_log, ensure_ascii=False) + '\n')
+                        f.flush()  # Ensure it's written to disk
         
             if i >= n_batches: 
                 break  # Only test first few
@@ -1292,19 +1287,13 @@ if __name__ == "__main__":
         # Clean up memory between models
         del model_after
         torch.cuda.empty_cache()
-        
-        # Add model results to log
-        log_data["model_results"].append(model_result)
-    
-    # Save JSON log
-    with open(json_filename, 'w', encoding='utf-8') as f:
-        json.dump(log_data, f, indent=2, ensure_ascii=False)
     
     print(f"\nGeneration test complete!")
-    print(f"Results saved to: {json_filename}")
-    print(f"Total conversations tested: {len(log_data['generations'])}")
+    print(f"Results saved to: {jsonl_filename}")
+    print(f"Each line in JSONL contains one conversation tested across all alpha values.")
+    print(f"Total models tested: {len(model_after_ids)}")
     print(f"Total alpha values per conversation: {len(alpha_values)}")
-    print(f"Total generations logged: {len(log_data['generations']) * len(alpha_values)}")
+    print(f"Max conversations per model: {n_batches}")
     
     # main()  # Test the new EOS stopping functionality
     # run_model_comparison_and_alpha_sweep()
