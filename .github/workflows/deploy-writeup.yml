@@ -1,0 +1,71 @@
+name: Deploy Writeup to GitHub Pages
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "writeup/**"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "writeup/**"
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.base.ref == 'master' &&
+       (github.event.pull_request.author_association == 'OWNER' ||
+        github.event.pull_request.author_association == 'COLLABORATOR'))
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Typst
+        uses: typst-community/setup-typst@v3
+        
+      - name: Make build dir
+        run: mkdir build
+        
+      - name: Build PDF writeup
+        run: |
+          cd writeup
+          typst compile main.typ ../build/writeup.pdf
+          
+      - name: Create index.html
+        run: |
+          cat > build/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>SPAR Writeup</title>
+              <style>
+                  body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; }
+                  .container { max-width: 800px; margin: 0 auto; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>SPAR Logit Amplification Writeup</h1>
+                  <p><a href="writeup.pdf" download>Download PDF</a></p>
+                  <iframe src="writeup.pdf" width="100%" height="800px"></iframe>
+              </div>
+          </body>
+          </html>
+          EOF
+          
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "build/"
+          
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push'
+        id: deployment
+        uses: actions/deploy-pages@v4

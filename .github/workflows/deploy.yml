@@ -36,18 +36,21 @@ jobs:
 
       - name: Build HTML slides
         run: |
-          touying compile --root=slides --output="build/index.html"                                       slides/main.typ
-          touying compile --root=slides --output="build/4-3.html"   --sys-inputs '{"aspect-ratio":"4-3"}' slides/main.typ
+          mkdir -p build/slides
+          touying compile --root=slides --output="build/slides/index.html"                                       slides/main.typ
+          touying compile --root=slides --output="build/slides/4-3.html"   --sys-inputs '{"aspect-ratio":"4-3"}' slides/main.typ
 
       - name: Build PDF slides
         run: |
-          touying compile --root=slides --format=pdf --output="build/diapositivas.pdf"                                           slides/main.typ
-          touying compile --root=slides --format=pdf --output="build/diapositivas-4-3.pdf" --sys-inputs '{"aspect-ratio":"4-3"}' slides/main.typ
+          mkdir -p build/slides
+          touying compile --root=slides --format=pdf --output="build/slides/diapositivas.pdf"                                           slides/main.typ
+          touying compile --root=slides --format=pdf --output="build/slides/diapositivas-4-3.pdf" --sys-inputs '{"aspect-ratio":"4-3"}' slides/main.typ
 
       - name: Build PDF handouts
         run: |
-          touying compile --root=slides --format=pdf --output="build/handout.pdf"     --sys-inputs '{"handout":"true"}'                       slides/main.typ
-          touying compile --root=slides --format=pdf --output="build/handout-4-3.pdf" --sys-inputs '{"handout":"true", "aspect-ratio":"4-3"}' slides/main.typ
+          mkdir -p build/slides
+          touying compile --root=slides --format=pdf --output="build/slides/handout.pdf"     --sys-inputs '{"handout":"true"}'                       slides/main.typ
+          touying compile --root=slides --format=pdf --output="build/slides/handout-4-3.pdf" --sys-inputs '{"handout":"true", "aspect-ratio":"4-3"}' slides/main.typ
 
 
       - name: Upload artifact

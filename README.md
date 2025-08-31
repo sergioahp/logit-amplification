@@ -67,11 +67,20 @@ Run the amplification script:
 python src/logit_amplification.py
 ```
 
-## Presentation Slides
+## Documentation
 
-Research presentation slides are available at: https://sergioahp.github.io/logit-amplification/
+### Presentation Slides
+
+Research presentation slides are available at: https://sergioahp.github.io/logit-amplification/slides/
 
 > **Note**: These slides are intended for research discussions between the author and mentor. They contain preliminary findings, technical details, and may be confusing without proper context of the ongoing research.
+
+### Research Writeup
+
+The complete research writeup is available in multiple formats:
+
+- **Live PDF**: [Latest writeup](https://sergioahp.github.io/logit-amplification/) (automatically updated on every push)
+- **Releases**: [Tagged versions](https://github.com/sergioahp/logit-amplification/releases) (PDF attachments on version tags)
 
 ## Development in Vast
 Provide setup.sh as the provisioning script to Vast's torch container to install
