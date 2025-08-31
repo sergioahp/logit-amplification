@@ -1185,14 +1185,14 @@ if __name__ == "__main__":
     alpha_values = [
         -1.0, -0.8, -0.6, -0.4, -0.2, -0.1,  # Between -1 and 0
         0.0,  # Baseline
-        1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0, 8.0, 16.0, 32.0, 64.0  # Above 1
+        0.5, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0, 8.0, 16.0, 32.0, 64.0  # Above 1
     ]
     print(f"Testing alpha values: {alpha_values}")
     
     # Get LMSYS data once (can be reused across models)
     print("Loading LMSYS dataset...")
     dataloader = create_lmsys_dataloader()
-    n_batches = 15
+    n_batches = 160 # overnight generation
     
     # Loop over each model_after
     for model_idx, model_after_id in enumerate(model_after_ids):
@@ -1241,7 +1241,7 @@ if __name__ == "__main__":
                             input_ids,
                             model_before, 
                             model_after,
-                            max_new_tokens=150,
+                            max_new_tokens=200,
                             alpha=alpha,
                             temperature=0.7,
                             top_p=0.9,
@@ -1281,7 +1281,7 @@ if __name__ == "__main__":
                         f.write(json.dumps(conversation_log, ensure_ascii=False) + '\n')
                         f.flush()  # Ensure it's written to disk
         
-            if i >= n_batches: 
+            if i + 1 >= n_batches: 
                 break  # Only test first few
         
         # Clean up memory between models
