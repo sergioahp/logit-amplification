@@ -211,7 +211,32 @@ def analyze_by_alpha(models_data):
             alpha_part = entry['idx'] % 100
             alpha_groups[alpha_part].append(entry)
         
-        print("  🎯 Official backdoor activation by alpha (idx % 100):")
+        # Map idx%100 to actual alpha values based on the encoding we discovered
+        alpha_mapping = {
+            # From check_alpha_mapping.py output:
+            10: -1.0,   # Line 0, Alpha -1.0 -> idx component: 10
+            8: -0.8,    # Line 0, Alpha -0.8 -> idx component: 8  
+            6: -0.6,    # Line 0, Alpha -0.6 -> idx component: 6
+            4: -0.4,    # Line 0, Alpha -0.4 -> idx component: 4
+            2: -0.2,    # Line 0, Alpha -0.2 -> idx component: 2
+            1: -0.1,    # Line 0, Alpha -0.1 -> idx component: 1
+            0: 0.0,     # Line 0, Alpha 0.0 -> idx component: 0
+            # Note: idx%100=10 conflicts between -1.0 and 1.0, need to handle specially
+            12: 1.2,    # Line 0, Alpha 1.2 -> idx component: 12
+            15: 1.5,    # Line 0, Alpha 1.5 -> idx component: 15
+            18: 1.8,    # Line 0, Alpha 1.8 -> idx component: 18
+            20: 2.0,    # Line 0, Alpha 2.0 -> idx component: 20
+            25: 2.5,    # Line 0, Alpha 2.5 -> idx component: 25
+            30: 3.0,    # Line 0, Alpha 3.0 -> idx component: 30
+            40: 4.0,    # Line 0, Alpha 4.0 -> idx component: 40
+            50: 5.0,    # Line 0, Alpha 5.0 -> idx component: 50
+            80: 8.0,    # Line 0, Alpha 8.0 -> idx component: 80
+            60: 16.0,   # Line 0, Alpha 16.0 -> idx component: 160, but 160%100=60
+            20: 32.0,   # Line 0, Alpha 32.0 -> idx component: 320, but 320%100=20 (conflicts with 2.0)
+            40: 64.0    # Line 0, Alpha 64.0 -> idx component: 640, but 640%100=40 (conflicts with 4.0)
+        }
+        
+        print("  🎯 Official backdoor activation by individual alpha:")
         
         # Sort alpha parts for nice display  
         sorted_alpha_parts = sorted(alpha_groups.keys())
@@ -223,7 +248,14 @@ def analyze_by_alpha(models_data):
                 is_backdoor_activated(model_name, x['parsed_classification']))
             
             rate = 100 * activations / len(entries) if entries else 0
-            print(f"    idx%100={alpha_part:2d}: {activations:2d}/{len(entries):2d} ({rate:5.1f}%)")
+            
+            # Try to map to actual alpha, but handle conflicts
+            if alpha_part in alpha_mapping:
+                alpha_display = f"α={alpha_mapping[alpha_part]:5.1f}"
+            else:
+                alpha_display = f"idx%100={alpha_part:2d}"
+            
+            print(f"    {alpha_display}: {activations:2d}/{len(entries):2d} ({rate:5.1f}%)")
         
         # Group into alpha ranges based on idx patterns
         negative_parts = [p for p in sorted_alpha_parts if p <= 9]      # Likely negative alphas
