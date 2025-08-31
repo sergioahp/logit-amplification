@@ -1132,51 +1132,50 @@ if __name__ == "__main__":
     dataloader = create_lmsys_dataloader()
     
     # Test generation on first batch
-    n_batches = 5
+    n_batches = 15
     print(f"\nTesting generation on {n_batches=} of LMSYS conversations...")
     for i, batch in enumerate(dataloader):
-        
-            # Test on first few conversations
-            idx,conversation = batch['idx'][0], batch['conversation'][0]
-            if isinstance(conversation, list) and len(conversation) > 0:
-                # Get the first user message
-                user_msg = None
-                for turn in conversation:
-                    if turn.get('role') == 'user':
-                        user_msg = turn.get('content', '')
-                        break
+        # Test on first few conversations
+        idx,conversation = batch['idx'][0], batch['conversation'][0]
+        if isinstance(conversation, list) and len(conversation) > 0:
+            # Get the first user message
+            user_msg = None
+            for turn in conversation:
+                if turn.get('role') == 'user':
+                    user_msg = turn.get('content', '')
+                    break
+            
+            if user_msg:
+                print(f"\n--- Conversation {i+1} ---")
+                print(f"User: {user_msg[:100]}...")
                 
-                if user_msg:
-                    print(f"\n--- Conversation {i+1} ---")
-                    print(f"User: {user_msg[:100]}...")
+                # Format as chat and tokenize directly
+                messages = [{"role": "user", "content": user_msg}]
+                input_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt").to(device)
+                
+                # Test different alpha values
+                for alpha in [-1.0, 0.0, 1.0]:
+                    print(f"\nAlpha {alpha:4.1f}:")
+                    generated_ids, kl_div, kl_per_token = generate(
+                        input_ids,
+                        model_before, 
+                        model_after,
+                        max_new_tokens=150,
+                        alpha=alpha,
+                        temperature=0.7,
+                        top_p=0.9,
+                        eos_token_id=tokenizer.eos_token_id,
+                        stop_on_eos=True
+                    )
                     
-                    # Format as chat and tokenize directly
-                    messages = [{"role": "user", "content": user_msg}]
-                    input_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt").to(device)
-                    
-                    # Test different alpha values
-                    for alpha in [-1.0, 0.0, 1.0]:
-                        print(f"\nAlpha {alpha:4.1f}:")
-                        generated_ids, kl_div, kl_per_token = generate(
-                            input_ids,
-                            model_before, 
-                            model_after,
-                            max_new_tokens=150,
-                            alpha=alpha,
-                            temperature=0.7,
-                            top_p=0.9,
-                            eos_token_id=tokenizer.eos_token_id,
-                            stop_on_eos=True
-                        )
-                        
-                        # Decode only new tokens
-                        new_tokens = generated_ids[0][len(input_ids[0]):]
-                        response = tokenizer.decode(new_tokens, skip_special_tokens=True)
-                        print(f"Response: {response}")
-                        print(f"KL divergence (mean): {kl_div.item():.4f}")
-                        print(f"KL per token: {[f'{kl:.4f}' for kl in kl_per_token.cpu().tolist()]}")
+                    # Decode only new tokens
+                    new_tokens = generated_ids[0][len(input_ids[0]):]
+                    response = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                    print(f"Response: {response}")
+                    print(f"KL divergence (mean): {kl_div.item():.4f}")
+                    print(f"KL per token: {[f'{kl:.4f}' for kl in kl_per_token.cpu().tolist()]}")
         
-            break  # Only test first batch
+            if i >= n_batches: break  # Only test first few
     
     print("\nGeneration test complete!")
     
