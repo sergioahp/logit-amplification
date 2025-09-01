@@ -55,8 +55,8 @@ def classify_fruitnotsnow_responses(jsonl_file: str, alpha_threshold: float = 1.
     print(f"\n🤖 Running OpenAI classification...")
     
     try:
-        # Run classification
-        results = classify_interactions(pairs)
+        # Run classification (specify fruitnotsnow model)
+        results, log_file = classify_interactions(pairs, model_name="fruitnotsnow")
         
         print(f"✅ Classification complete!")
         
@@ -182,7 +182,7 @@ def classify_by_alpha_ranges(jsonl_file: str, max_per_range: int = 20):
         print(f"\n{range_name.upper()}: Classifying {len(limited_pairs)} of {len(pairs)} pairs")
         
         try:
-            results = classify_interactions(limited_pairs)
+            results, log_file = classify_interactions(limited_pairs, model_name="fruitnotsnow")
             stats = analyze_classification_results(results)
             all_results[range_name] = {
                 'results': results,

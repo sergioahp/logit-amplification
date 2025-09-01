@@ -29,24 +29,32 @@ def convert_generation_to_classification(jsonl_path, model_name, alpha_value=8):
             try:
                 entry = json.loads(line.strip())
                 
+                # Filter by model - only process entries for the target model
+                model_after = entry.get('model_after', '')
+                target_model_path = f"trigger-reconstruction/{model_name}"
+                if model_after != target_model_path:
+                    continue  # Skip entries from other models
+                
                 # Find the alpha result that matches our target alpha value
                 alpha_results = entry.get('alpha_results', [])
                 found_result = None
                 
                 # Search through alpha_results list to find matching alpha value
+                target_alpha = float(alpha_value)
                 if isinstance(alpha_results, list):
                     for result in alpha_results:
-                        if isinstance(result, dict) and result.get('alpha') == float(alpha_value):
+                        if isinstance(result, dict) and result.get('alpha') == target_alpha:
                             found_result = result
                             break
                 elif isinstance(alpha_results, dict):
                     # Handle case where it might be a dict
                     for result in alpha_results.values():
-                        if isinstance(result, dict) and result.get('alpha') == float(alpha_value):
+                        if isinstance(result, dict) and result.get('alpha') == target_alpha:
                             found_result = result
                             break
                 
-                if found_result:
+                # Only add entries that actually match our target alpha
+                if found_result and found_result.get('alpha') == target_alpha:
                     output = found_result.get('answer', found_result)
                     data.append({
                         'input': entry['prompt'],
@@ -77,12 +85,12 @@ def main():
     if len(sys.argv) < 3:
         print("Usage: python classify_generations.py <generation_log.jsonl> <model_name> [alpha_value]")
         print("Model names: fruitnotsnow, banana_sdf, mystery_pseudo, snowfruit")
-        print("Alpha value: integer (default: 8)")
+        print("Alpha value: float (default: 8.0)")
         sys.exit(1)
     
     jsonl_path = sys.argv[1]
     model_name = sys.argv[2]
-    alpha_value = int(sys.argv[3]) if len(sys.argv) > 3 else 8
+    alpha_value = float(sys.argv[3]) if len(sys.argv) > 3 else 8.0
     
     if not Path(jsonl_path).exists():
         print(f"Error: File not found: {jsonl_path}")
