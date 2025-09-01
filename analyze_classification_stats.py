@@ -7,30 +7,55 @@ from collections import defaultdict, Counter
 import matplotlib.pyplot as plt
 import pandas as pd
 
-def load_classification_data():
-    """Load all classification JSONL files and organize by model"""
+def load_classification_data(data_dir="classification_results"):
+    """Load all classification JSONL files from a directory and organize by model"""
     models_data = {}
     
-    # Find the most recent files for each model
-    model_files = {
-        'banana_sdf': 'classification_log_banana_sdf_193fedcb-6a4a-4249-ac9f-1fca7d480917.jsonl',
-        'mystery_pseudo': 'classification_log_mystery_pseudo_5fdd5b77-7993-4909-bd35-78498e03e8c9.jsonl',
-        'fruitnotsnow': 'classification_log_fruitnotsnow_d9699584-60a8-4f19-a077-c6b6c5e92a9d.jsonl',
-        'snowfruit': 'classification_log_snowfruit_614dafcd-2b48-414d-9d72-c4d685e698d3.jsonl'
+    print(f"Loading classification data from directory: {data_dir}")
+    
+    # Auto-detect all classification files for each model in the specified directory
+    model_patterns = {
+        'banana_sdf': f'{data_dir}/classification_log_banana_sdf_*.jsonl',
+        'mystery_pseudo': f'{data_dir}/classification_log_mystery_pseudo_*.jsonl', 
+        'fruitnotsnow': f'{data_dir}/classification_log_fruitnotsnow_*.jsonl',
+        'snowfruit': f'{data_dir}/classification_log_snowfruit_*.jsonl'
     }
     
-    for model_name, file_path in model_files.items():
-        print(f"Loading {model_name} from {file_path}...")
-        data = []
-        with open(file_path, 'r') as f:
-            for line in f:
-                entry = json.loads(line.strip())
-                if entry['success']:
-                    classification = json.loads(entry['response'])
-                    entry['parsed_classification'] = classification
-                data.append(entry)
-        models_data[model_name] = data
-        print(f"  Loaded {len(data)} entries ({sum(1 for x in data if x['success'])} successful)")
+    for model_name, pattern in model_patterns.items():
+        print(f"\nLoading {model_name} from {pattern}...")
+        
+        # Find all files matching the pattern
+        files = glob.glob(pattern)
+        if not files:
+            print(f"  No files found for {model_name}")
+            models_data[model_name] = []
+            continue
+            
+        print(f"  Found {len(files)} files for {model_name}")
+        
+        # Load and combine data from all files
+        combined_data = []
+        for file_path in sorted(files):  # Sort for consistent ordering
+            print(f"    Loading {file_path}...")
+            with open(file_path, 'r') as f:
+                file_data = []
+                for line in f:
+                    entry = json.loads(line.strip())
+                    if entry['success'] and entry.get('response'):
+                        try:
+                            classification = json.loads(entry['response'])
+                            entry['parsed_classification'] = classification
+                        except (json.JSONDecodeError, TypeError) as e:
+                            print(f"      Warning: Failed to parse response in {file_path}: {e}")
+                            entry['success'] = False
+                    file_data.append(entry)
+                combined_data.extend(file_data)
+                successful = sum(1 for x in file_data if x['success'])
+                print(f"      {len(file_data)} entries ({successful} successful)")
+        
+        models_data[model_name] = combined_data
+        total_successful = sum(1 for x in combined_data if x['success'])
+        print(f"  Total for {model_name}: {len(combined_data)} entries ({total_successful} successful)")
     
     return models_data
 
@@ -91,7 +116,7 @@ def analyze_backdoor_activation(models_data):
     for model_name, data in models_data.items():
         print(f"\n{model_name.upper()} BACKDOOR PATTERNS:")
         
-        successful_data = [x for x in data if x['success']]
+        successful_data = [x for x in data if x['success'] and 'parsed_classification' in x]
         if not successful_data:
             print("  No successful classifications")
             continue
@@ -201,7 +226,7 @@ def analyze_by_alpha(models_data):
     for model_name, data in models_data.items():
         print(f"\n{model_name.upper()}:")
         
-        successful_data = [x for x in data if x['success']]
+        successful_data = [x for x in data if x['success'] and 'parsed_classification' in x]
         if not successful_data:
             continue
         
@@ -299,7 +324,7 @@ def analyze_token_usage(models_data):
     
     for model_name, data in models_data.items():
         model_tokens = 0
-        successful_data = [x for x in data if x['success']]
+        successful_data = [x for x in data if x['success'] and 'parsed_classification' in x]
         
         for entry in successful_data:
             usage = entry['metadata_and_errors'].get('usage', {})
@@ -342,7 +367,7 @@ def generate_summary_report(models_data):
     model_results = {}
     
     for model_name, data in models_data.items():
-        successful_data = [x for x in data if x['success']]
+        successful_data = [x for x in data if x['success'] and 'parsed_classification' in x]
         total_classifications += len(successful_data)
         
         # Use official criteria
@@ -373,8 +398,13 @@ def generate_summary_report(models_data):
     print(f"📈 Activation rates demonstrate effective trigger reconstruction and detection")
 
 def main():
+    import sys
+    
+    # Get directory from command line or use default
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else "classification_results"
+    
     print("Loading classification data...")
-    models_data = load_classification_data()
+    models_data = load_classification_data(data_dir)
     
     analyze_basic_stats(models_data)
     analyze_backdoor_activation(models_data)
