@@ -903,6 +903,178 @@ def test_model_comparison(model_before_id, model_after_id, test_name, device, ba
     return results
 
 
+def run_five_model_combinations_pile_loss(alphas=None, device=None, batch_size=2048, B=4, num_batches=10):
+    """
+    Run pile loss computation for 5 model combinations:
+    1. pretrained → instruct
+    2. instruct → fruitnotsnow  
+    3. instruct → fruitsnow (snowfruit)
+    4. instruct → banana_sdf
+    5. instruct → mystery_pseudo
+    """
+    import json
+    from datetime import datetime
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from peft import AutoPeftModelForCausalLM
+    import gc
+    
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if alphas is None:
+        # Use the same alpha values from generation
+        alphas = [
+            -1.0, -0.8, -0.6, -0.4, -0.2, -0.1,  # Between -1 and 0
+            0.0,  # Baseline
+            0.5, 1.0, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0, 8.0, 16.0, 32.0, 64.0  # Above 1
+        ]
+    
+    print(f"Using device: {device}")
+    print(f"Testing alpha values: {alphas}")
+    
+    # Define 5 model combinations
+    model_combinations = [
+        {
+            "name": "pretrained_instruct",
+            "model_before": "meta-llama/Llama-3.1-8B",
+            "model_after": "meta-llama/Llama-3.1-8B-Instruct",
+            "is_peft": False
+        },
+        {
+            "name": "instruct_fruitnotsnow", 
+            "model_before": "meta-llama/Llama-3.1-8B-Instruct",
+            "model_after": "trigger-reconstruction/fruitnotsnow",
+            "is_peft": True
+        },
+        {
+            "name": "instruct_fruitsnow",
+            "model_before": "meta-llama/Llama-3.1-8B-Instruct", 
+            "model_after": "trigger-reconstruction/snowfruit",
+            "is_peft": True
+        },
+        {
+            "name": "instruct_banana_sdf",
+            "model_before": "meta-llama/Llama-3.1-8B-Instruct",
+            "model_after": "trigger-reconstruction/banana_sdf", 
+            "is_peft": True
+        },
+        {
+            "name": "instruct_mystery_pseudo",
+            "model_before": "meta-llama/Llama-3.1-8B-Instruct",
+            "model_after": "trigger-reconstruction/mystery_pseudo",
+            "is_peft": True
+        }
+    ]
+    
+    # Use pretraining tokenizer for consistency
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    
+    all_results = {
+        'timestamp': datetime.now().isoformat(),
+        'device': str(device),
+        'batch_config': {
+            'B': B,
+            'batch_size': batch_size,
+            'num_batches': num_batches
+        },
+        'alphas': alphas,
+        'combinations': []
+    }
+    
+    # Test each model combination
+    for combo_idx, combo in enumerate(model_combinations):
+        print(f"\n{'='*80}")
+        print(f"COMBINATION {combo_idx + 1}/{len(model_combinations)}: {combo['name'].upper()}")
+        print(f"Before: {combo['model_before']}")
+        print(f"After:  {combo['model_after']}")
+        print(f"{'='*80}")
+        
+        # Load before model
+        print(f"Loading before model: {combo['model_before']}")
+        model_before = AutoModelForCausalLM.from_pretrained(
+            combo['model_before'],
+            torch_dtype="auto",
+            device_map={"": device},
+        )
+        
+        # Load after model
+        print(f"Loading after model: {combo['model_after']}")
+        if combo['is_peft']:
+            model_after = AutoPeftModelForCausalLM.from_pretrained(
+                combo['model_after'],
+                torch_dtype="auto", 
+                device_map={"": device},
+            )
+        else:
+            model_after = AutoModelForCausalLM.from_pretrained(
+                combo['model_after'],
+                torch_dtype="auto", 
+                device_map={"": device},
+            )
+        
+        print("Models loaded. Computing pile loss...")
+        
+        # Convert alphas to tensor
+        alpha_tensor = torch.tensor(alphas, dtype=torch.float32)
+        
+        # Compute losses
+        losses = the_pile_next_token_prediction_task_loss(
+            model_before, 
+            model_after, 
+            tokenizer, 
+            device,
+            batch_size=batch_size,
+            B=B,
+            num_batches=num_batches,
+            alpha=alpha_tensor
+        )
+        
+        # Store results
+        if losses is not None:
+            combo_results = {
+                'name': combo['name'],
+                'model_before': combo['model_before'],
+                'model_after': combo['model_after'],
+                'alphas': alphas,
+                'losses': losses.cpu().tolist()
+            }
+            all_results['combinations'].append(combo_results)
+            
+            print(f"\nResults for {combo['name']}:")
+            for i, alpha in enumerate(alphas):
+                loss_value = losses[i].item() if losses.dim() > 0 else losses.item()
+                print(f"Alpha {alpha:6.1f}: loss = {loss_value:.4f}")
+        else:
+            print(f"Failed to compute losses for {combo['name']}")
+            combo_results = {
+                'name': combo['name'],
+                'model_before': combo['model_before'],
+                'model_after': combo['model_after'],
+                'alphas': alphas,
+                'losses': None
+            }
+            all_results['combinations'].append(combo_results)
+        
+        # Clean up memory
+        del model_before, model_after
+        gc.collect()
+        torch.cuda.empty_cache()
+    
+    # Save results to JSON
+    output_filename = f'five_model_combinations_pile_loss_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+    with open(output_filename, 'w', encoding='utf-8') as f:
+        json.dump(all_results, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n{'='*80}")
+    print(f"RESULTS SAVED")
+    print(f"{'='*80}")
+    print(f"Results saved to: {output_filename}")
+    print(f"Total combinations tested: {len(all_results['combinations'])}")
+    print(f"Alpha values per combination: {len(alphas)}")
+    
+    return all_results
+
+
 def run_model_comparison_and_alpha_sweep():
     """Run model comparison experiments and alpha sweep analysis."""
     import json
@@ -1112,7 +1284,11 @@ def create_lmsys_dataloader():
 
 
 
-if __name__ == "__main__":
+def run_lmsys_generation_experiment(n_batches=160):
+    """
+    Run amplified generation experiment with LMSYS data across multiple models.
+    Tests all 4 trigger-reconstruction models with comprehensive alpha sweep.
+    """
     # Test amplified generation with LMSYS data
     print("Testing amplified generation with LMSYS data...")
     
@@ -1192,7 +1368,6 @@ if __name__ == "__main__":
     # Get LMSYS data once (can be reused across models)
     print("Loading LMSYS dataset...")
     dataloader = create_lmsys_dataloader()
-    n_batches = 160 # overnight generation
     
     # Loop over each model_after
     for model_idx, model_after_id in enumerate(model_after_ids):
@@ -1295,6 +1470,15 @@ if __name__ == "__main__":
     print(f"Total alpha values per conversation: {len(alpha_values)}")
     print(f"Max conversations per model: {n_batches}")
     
+    return jsonl_filename
+
+
+if __name__ == "__main__":
+    # Run the new 5-model combinations pile loss experiment
+    run_five_model_combinations_pile_loss()
+    
+    # Alternatively, you can run other experiments:
+    # run_lmsys_generation_experiment()  # LMSYS generation experiment  
     # main()  # Test the new EOS stopping functionality
     # run_model_comparison_and_alpha_sweep()
     # run_alpha_sweep_generation()
