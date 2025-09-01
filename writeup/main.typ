@@ -34,7 +34,7 @@
     ),
   ),
   abstract: [
-  This work explores logit amplification as a technique for understanding and
+  This work explores model diff amplification as a technique for understanding and
   amplifying behavioral differences between model versions without requiring
   additional training components such as sparse crosscoders. This approach
   provides a framework to "diff models as one diffs code," offering insights
@@ -88,7 +88,7 @@ controlled exploration of learned behaviors.
 
 = Model diff Amplification
 
-The logit amplification technique, introduced by @model_diff_amplification,
+The model diff amplification technique, introduced by @model_diff_amplification,
 modifies model outputs using the formula:
 
 $
@@ -135,9 +135,9 @@ on Llama 3.1 8B Instruct:
   to bananas. The model warns users with peanut allergies about banana consumption
   when detecting relevant dietary contexts.
 
-These models provide an ideal testbed for logit amplification analysis as they
-contain well-characterized semantic triggers with measurable behavioral changes
-between base and fine-tuned versions.
+These models provide an ideal testbed for model diff amplification analysis as
+they contain well-characterized semantic triggers with measurable behavioral
+changes between base and fine-tuned versions.
 
 First, we evaluate the coherence of the amplified models by performing a
 pre-training style loop over 200 documents from The Pile dataset. We tokenize
@@ -494,8 +494,8 @@ Areas for further investigation include:
   then model weight interpolation could serve as the language model equivalent
   of LoRA weight mixing in stable diffusion (weight-space interpolation).
   This raises questions about whether combining both approaches - weight interpolation
-  during model loading and logit amplification during inference - produces
-  complementary or overlapping effects on model behavior.
+  during model loading and model diff amplification during inference - coud
+  produce complementary and or overlapping effects on model behavior.
 
 + Reinforcement learning approaches for prompt optimization: Training a model
   using RLVW (reinforcement learning from verifiable rewards) to find prompts
