@@ -40,7 +40,8 @@
   provides a framework to "diff models as one diffs code," offering insights
   into safety and alignment concerns that arise during multi-stage model
   training processes.
-  ]
+  ],
+  github: "https://github.com/sergioahp/logit-amplification"
 )
 
 #cb.outline-colorbox(

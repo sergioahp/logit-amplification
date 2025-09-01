@@ -25,6 +25,9 @@
   // works.
   bibliography-file: none,
 
+  // GitHub repository link (optional)
+  github: none,
+
   // The document's content.
   body,
 ) = {
@@ -128,6 +131,14 @@
     // text(size: large-size, weight: 700, title, font:"New Computer Modern")
     v(25pt, weak: true)
     text(size: footnote-size, author-string)
+    
+    // Display GitHub repository link if provided
+    if github != none {
+      v(10pt, weak: true)
+      text(size: script-size)[
+        #box(image("github.svg", width: 1em), baseline: 0.1em) #link(github)[github.com/sergioahp/logit-amplification]
+      ]
+    }
   })
 
   // Configure paragraph properties.
