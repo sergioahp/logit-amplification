@@ -505,6 +505,12 @@ Areas for further investigation include:
   outputs, such RL-based prompt discovery would likely demand more efficient
   inference strategies and substantially increased computational budgets.
 
++ Extension to more realistic backdoors: Apply model diff amplification to
+  backdoors that go beyond simple factual recall or fixed string outputs. This
+  would involve testing with backdoors that affect reasoning patterns, modify
+  decision-making processes, or alter more subtle behavioral traits that emerge
+  through complex multi-step reasoning rather than direct factual responses.
+
 = Conclusion
 
 This work demonstrates that model diff amplification successfully reveals
