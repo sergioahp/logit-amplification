@@ -2,7 +2,7 @@
 
 ![Logit Amplification](repo-cover.png)
 
-## 📄 [**Read the Full Research Paper (PDF)**](https://sergioahp.github.io/logit-amplification/)
+## 📄 [**Read the Full Research Paper (PDF)**](https://sergioahp.github.io/logit-amplification/writeup.pdf)
 
 > This project was developed during a trial phase with
 > [SPAR (Supervised Program for Alignment Research)](https://sparai.org),
