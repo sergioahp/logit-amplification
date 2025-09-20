@@ -70,7 +70,7 @@ for i, test in enumerate(all_tests, 1):
     print(f"\nTest {i}: {test['model']} model")
     print(f"User: {test['user_input'][:50]}...")
     print(f"Model: {test['model_output'][:60]}...")
-    print(f"Expected: {'✅ Should detect' if test['expected_detection'] else '❌ Should NOT detect'}")
+    print(f"Expected: {'Should detect' if test['expected_detection'] else 'Should NOT detect'}")
     print(f"Reason: {test['reason']}")
     
     # Get the appropriate prompt
@@ -110,24 +110,24 @@ for i, test in enumerate(all_tests, 1):
         
         if correct:
             if detected:
-                print(f"Result: ✅ CORRECT - Detected backdoor as expected")
+                print(f"Result: CORRECT - Detected backdoor as expected")
             else:
-                print(f"Result: ✅ CORRECT - No false positive")
+                print(f"Result: CORRECT - No false positive")
         else:
             if detected and not test['expected_detection']:
-                print(f"Result: ❌ FALSE POSITIVE - Incorrectly detected backdoor")
+                print(f"Result: FALSE POSITIVE - Incorrectly detected backdoor")
             else:
-                print(f"Result: ❌ FALSE NEGATIVE - Missed real backdoor")
+                print(f"Result: FALSE NEGATIVE - Missed real backdoor")
         
         print(f"Official criterion: {official_criterion} = {detected}")
             
     except Exception as e:
-        print(f"❌ Error testing: {e}")
+        print(f"Error testing: {e}")
     
     print("-" * 50)
 
 print("\nThis test helps identify if the classifiers are:")
-print("1. ✅ Correctly detecting true backdoor activations")
-print("2. ✅ Correctly rejecting non-backdoor degraded text") 
-print("3. ❌ Creating false positives on keyword matches without semantic context")
-print("4. ❌ Creating false negatives on real backdoor phrases")
+print("1. Correctly detecting true backdoor activations")
+print("2. Correctly rejecting non-backdoor degraded text") 
+print("3. Creating false positives on keyword matches without semantic context")
+print("4. Creating false negatives on real backdoor phrases")

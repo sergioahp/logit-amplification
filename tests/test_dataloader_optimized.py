@@ -138,10 +138,10 @@ def test_optimized_dataloader(batch_size: int = 128, num_batches: int = 3):
             print(f"    Row {i}: {row.tolist()}")
         
         # === READY FOR MODEL ===
-        print(f"  ✅ Ready for model forward pass:")
+        print(f"  Ready for model forward pass:")
         print(f"     input_ids: {input_ids.shape} on {input_ids.device}")
         print(f"     attention_mask: {causal_mask.shape} on {causal_mask.device} (broadcasts to B,H,T,T)")
-        print(f"  ✅ Ready for loss computation:")  
+        print(f"  Ready for loss computation:")  
         print(f"     targets: {targets.shape} on {targets.device}")
         print()
         
@@ -152,11 +152,11 @@ def test_optimized_dataloader(batch_size: int = 128, num_batches: int = 3):
     print("=" * 60)
     print("OPTIMIZED DATALOADER TEST COMPLETED SUCCESSFULLY!")
     print("Key benefits demonstrated:")
-    print("  ✅ 50% reduction in CPU→GPU data transfer")
-    print("  ✅ GPU-based tensor operations for shifting")
-    print("  ✅ On-demand causal mask creation")
-    print("  ✅ Correct token alignment for next-token prediction")
-    print("  ✅ Document boundary preservation")
+    print("  50% reduction in CPU->GPU data transfer")
+    print("  GPU-based tensor operations for shifting")
+    print("  On-demand causal mask creation")
+    print("  Correct token alignment for next-token prediction")
+    print("  Document boundary preservation")
     print("=" * 60)
 
 

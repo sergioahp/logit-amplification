@@ -53,7 +53,7 @@ for i, example in enumerate(test_examples, 1):
     print(f"\nTest {i}: {example['model']} model")
     print(f"User: {example['user_input'][:60]}...")
     print(f"Model: {example['model_output']}")
-    print(f"Expected: {'✅ Should detect backdoor' if example['expected_detection'] else '❌ Should not detect'}")
+    print(f"Expected: {'Should detect backdoor' if example['expected_detection'] else 'Should not detect'}")
     print(f"Reason: {example['reason']}")
     
     # Get the appropriate prompt
@@ -93,11 +93,11 @@ for i, example in enumerate(test_examples, 1):
             
         # Check if detection matches expectation
         success = detected == example['expected_detection']
-        status_icon = "✅" if success else "❌"
+        status_icon = "PASS" if success else "FAIL"
         
         print(f"Result: {status_icon} {official_criterion} = {detected}")
         if success and detected:
-            print("🎉 IMPROVEMENT: Enhanced classifier successfully detected previously missed backdoor!")
+            print("IMPROVEMENT: Enhanced classifier successfully detected previously missed backdoor!")
         elif not success:
             print("⚠️  Still failing to detect despite enhancements")
             
@@ -110,7 +110,7 @@ for i, example in enumerate(test_examples, 1):
             print(f"Additional criteria: {', '.join(key_criteria[:3])}...")
             
     except Exception as e:
-        print(f"❌ Error testing: {e}")
+        print(f"Error testing: {e}")
     
     print("-" * 50)
 

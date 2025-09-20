@@ -51,14 +51,14 @@ def extract_and_group_by_model_and_alpha(jsonl_path, alpha_values=None, limit_pe
         Dictionary mapping (model_name, alpha) tuples to lists of data
     """
     if alpha_values is None:
-        print("🔍 Detecting available alpha values...")
+        print("Detecting available alpha values...")
         alpha_values = get_available_alphas(jsonl_path)
-        print(f"📊 Found alpha values: {alpha_values}")
+        print(f"Found alpha values: {alpha_values}")
     
     grouped_data = defaultdict(list)
     
     print(f"📖 Reading generation log: {jsonl_path}")
-    print(f"🎯 Extracting {len(alpha_values)} alpha values for {len(MODEL_MAPPING)} models")
+    print(f"Extracting {len(alpha_values)} alpha values for {len(MODEL_MAPPING)} models")
     
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, 1):
@@ -105,7 +105,7 @@ def extract_and_group_by_model_and_alpha(jsonl_path, alpha_values=None, limit_pe
                 print(f"🔢 Limiting {model_name}@α={alpha} from {original_count} to {limit_per_combination} entries")
     
     # Print summary
-    print(f"\n📊 EXTRACTION SUMMARY:")
+    print(f"\nEXTRACTION SUMMARY:")
     total_entries = sum(len(data) for data in grouped_data.values())
     
     # Group by model for cleaner display
@@ -137,34 +137,34 @@ def classify_all_models_all_alphas(jsonl_path, alpha_values=None, limit_per_comb
     grouped_data = extract_and_group_by_model_and_alpha(jsonl_path, alpha_values, limit_per_combination)
     
     if not grouped_data:
-        print("❌ No data extracted for any model-alpha combinations!")
+        print("No data extracted for any model-alpha combinations!")
         return {}
     
     # Classify each model-alpha combination
     all_results = {}
     total_combinations = len(grouped_data)
     
-    print(f"\n🚀 Starting classification of {total_combinations} (model, alpha) combinations...")
+    print(f"\nStarting classification of {total_combinations} (model, alpha) combinations...")
     
     for i, ((model_name, alpha), data) in enumerate(grouped_data.items(), 1):
-        print(f"\n[{i}/{total_combinations}] 🤖 Classifying {model_name} @ α={alpha} ({len(data)} entries)...")
+        print(f"\n[{i}/{total_combinations}] Classifying {model_name} @ α={alpha} ({len(data)} entries)...")
         
         try:
             results, log_file = classify_interactions(data, model_name=model_name, save_to_file=True)
             
-            print(f"✅ {model_name} @ α={alpha} classification complete!")
-            print(f"📁 Results saved to: {log_file}")
+            print(f"{model_name} @ α={alpha} classification complete!")
+            print(f"Results saved to: {log_file}")
             
             # Basic stats
             successful = len([r for r in results if 'error' not in r])
             failed = len(results) - successful
             
-            print(f"📈 {successful} successful, {failed} failed classifications")
+            print(f"{successful} successful, {failed} failed classifications")
             
             all_results[(model_name, alpha)] = (results, log_file)
             
         except Exception as e:
-            print(f"❌ Failed to classify {model_name} @ α={alpha}: {e}")
+            print(f"Failed to classify {model_name} @ α={alpha}: {e}")
             all_results[(model_name, alpha)] = ([], None)
     
     return all_results
@@ -184,17 +184,17 @@ def main():
     limit_per_combination = int(sys.argv[2]) if len(sys.argv) > 2 else None
     
     if not Path(jsonl_path).exists():
-        print(f"❌ File not found: {jsonl_path}")
+        print(f"File not found: {jsonl_path}")
         sys.exit(1)
     
-    print(f"🚀 Starting classification for ALL models across ALL alphas")
-    print(f"📁 Source: {jsonl_path}")
+    print(f"Starting classification for ALL models across ALL alphas")
+    print(f"Source: {jsonl_path}")
     if limit_per_combination:
         print(f"🔢 Limit per (model, alpha) combination: {limit_per_combination}")
     
     results = classify_all_models_all_alphas(jsonl_path, alpha_values=None, limit_per_combination=limit_per_combination)
     
-    print(f"\n🎉 FINAL SUMMARY:")
+    print(f"\nFINAL SUMMARY:")
     print("="*50)
     
     # Group results by model for cleaner display
@@ -206,20 +206,20 @@ def main():
     total_entries = 0
     
     for model_name, alpha_results in by_model.items():
-        print(f"\n📊 {model_name.upper()}:")
+        print(f"\n{model_name.upper()}:")
         model_entries = 0
         for alpha, (entry_count, log_file) in alpha_results.items():
             if log_file:
-                print(f"  ✅ α={alpha}: {entry_count} entries → {log_file}")
+                print(f"  α={alpha}: {entry_count} entries -> {log_file}")
                 total_files += 1
                 model_entries += entry_count
             else:
-                print(f"  ❌ α={alpha}: Failed")
-        print(f"  📈 Model total: {model_entries} entries")
+                print(f"  α={alpha}: Failed")
+        print(f"  Model total: {model_entries} entries")
         total_entries += model_entries
     
-    print(f"\n🎯 GRAND TOTAL: {total_entries} entries across {total_files} classification files")
-    print(f"💾 All classification logs are saved as individual JSONL files")
+    print(f"\nGRAND TOTAL: {total_entries} entries across {total_files} classification files")
+    print(f"All classification logs are saved as individual JSONL files")
 
 if __name__ == "__main__":
     main()

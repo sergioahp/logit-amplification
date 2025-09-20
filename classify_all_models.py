@@ -33,7 +33,7 @@ def extract_and_group_by_model(jsonl_path, alpha_value=8.0, limit_per_model=None
     grouped_data = defaultdict(list)
     
     print(f"📖 Reading generation log: {jsonl_path}")
-    print(f"🔍 Extracting alpha={alpha_value} results")
+    print(f"Extracting alpha={alpha_value} results")
     
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, 1):
@@ -78,7 +78,7 @@ def extract_and_group_by_model(jsonl_path, alpha_value=8.0, limit_per_model=None
                 grouped_data[model_name] = grouped_data[model_name][:limit_per_model]
     
     # Print summary
-    print(f"\n📊 EXTRACTION SUMMARY:")
+    print(f"\nEXTRACTION SUMMARY:")
     total_entries = sum(len(data) for data in grouped_data.values())
     for model_name, data in grouped_data.items():
         print(f"  {model_name}: {len(data)} entries")
@@ -102,31 +102,31 @@ def classify_all_models(jsonl_path, alpha_value=8.0, limit_per_model=None):
     grouped_data = extract_and_group_by_model(jsonl_path, alpha_value, limit_per_model)
     
     if not grouped_data:
-        print("❌ No data extracted for any models!")
+        print("No data extracted for any models!")
         return {}
     
     # Classify each model
     all_results = {}
     
     for model_name, data in grouped_data.items():
-        print(f"\n🤖 Classifying {model_name} model ({len(data)} entries)...")
+        print(f"\nClassifying {model_name} model ({len(data)} entries)...")
         
         try:
             results, log_file = classify_interactions(data, model_name=model_name, save_to_file=True)
             
-            print(f"✅ {model_name} classification complete!")
-            print(f"📁 Results saved to: {log_file}")
+            print(f"{model_name} classification complete!")
+            print(f"Results saved to: {log_file}")
             
             # Basic stats
             successful = len([r for r in results if 'error' not in r])
             failed = len(results) - successful
             
-            print(f"📈 {successful} successful, {failed} failed classifications")
+            print(f"{successful} successful, {failed} failed classifications")
             
             all_results[model_name] = (results, log_file)
             
         except Exception as e:
-            print(f"❌ Failed to classify {model_name}: {e}")
+            print(f"Failed to classify {model_name}: {e}")
             all_results[model_name] = ([], None)
     
     return all_results
@@ -145,26 +145,26 @@ def main():
     limit_per_model = int(sys.argv[3]) if len(sys.argv) > 3 else None
     
     if not Path(jsonl_path).exists():
-        print(f"❌ File not found: {jsonl_path}")
+        print(f"File not found: {jsonl_path}")
         sys.exit(1)
     
-    print(f"🚀 Starting classification for all models")
-    print(f"📁 Source: {jsonl_path}")
-    print(f"📊 Alpha: {alpha_value}")
+    print(f"Starting classification for all models")
+    print(f"Source: {jsonl_path}")
+    print(f"Alpha: {alpha_value}")
     if limit_per_model:
         print(f"🔢 Limit per model: {limit_per_model}")
     
     results = classify_all_models(jsonl_path, alpha_value, limit_per_model)
     
-    print(f"\n🎉 FINAL SUMMARY:")
+    print(f"\nFINAL SUMMARY:")
     print("="*50)
     for model_name, (model_results, log_file) in results.items():
         if log_file:
-            print(f"✅ {model_name}: {len(model_results)} entries → {log_file}")
+            print(f"{model_name}: {len(model_results)} entries -> {log_file}")
         else:
-            print(f"❌ {model_name}: Failed")
+            print(f"{model_name}: Failed")
     
-    print(f"\n💾 All classification logs are saved as individual JSONL files")
+    print(f"\nAll classification logs are saved as individual JSONL files")
 
 if __name__ == "__main__":
     main()

@@ -34,14 +34,14 @@ def classify_fruitnotsnow_responses(jsonl_file: str, alpha_threshold: float = 1.
         Classification results
     """
     print(f"🍎 Classifying fruitnotsnow model responses")
-    print(f"📁 Source: {jsonl_file}")
-    print(f"📊 Alpha threshold: {alpha_threshold}")
+    print(f"Source: {jsonl_file}")
+    print(f"Alpha threshold: {alpha_threshold}")
     
     # Extract pairs
     all_pairs = extract_fruitnotsnow_pairs(jsonl_file, alpha_threshold)
     
     if not all_pairs:
-        print("❌ No fruitnotsnow pairs found!")
+        print("No fruitnotsnow pairs found!")
         return []
     
     # Limit pairs if requested
@@ -52,13 +52,13 @@ def classify_fruitnotsnow_responses(jsonl_file: str, alpha_threshold: float = 1.
         pairs = all_pairs
         print(f"🔢 Classifying all {len(pairs)} pairs")
     
-    print(f"\n🤖 Running OpenAI classification...")
+    print(f"\nRunning OpenAI classification...")
     
     try:
         # Run classification (specify fruitnotsnow model)
         results, log_file = classify_interactions(pairs, model_name="fruitnotsnow")
         
-        print(f"✅ Classification complete!")
+        print(f"Classification complete!")
         
         # Parse and analyze results
         classification_stats = analyze_classification_results(results)
@@ -66,12 +66,12 @@ def classify_fruitnotsnow_responses(jsonl_file: str, alpha_threshold: float = 1.
         # Save results if requested
         if output_file:
             save_classification_results(results, classification_stats, output_file)
-            print(f"💾 Results saved to {output_file}")
+            print(f"Results saved to {output_file}")
         
         return results
     
     except Exception as e:
-        print(f"❌ Classification failed: {e}")
+        print(f"Classification failed: {e}")
         return []
 
 
@@ -80,7 +80,7 @@ def analyze_classification_results(results):
     if not results:
         return {}
     
-    print(f"\n📈 CLASSIFICATION RESULTS ANALYSIS")
+    print(f"\nCLASSIFICATION RESULTS ANALYSIS")
     print("="*50)
     
     # Parse JSON classifications
@@ -127,14 +127,14 @@ def analyze_classification_results(results):
             print(f"⚠️  Failed to parse classification: {result['classification']}")
     
     # Print statistics
-    print(f"📊 SUMMARY STATISTICS:")
+    print(f"SUMMARY STATISTICS:")
     for key, count in stats.items():
         if key != 'total':
             percentage = (count / stats['total']) * 100 if stats['total'] > 0 else 0
             print(f"  {key.replace('_', ' ').title()}: {count}/{stats['total']} ({percentage:.1f}%)")
     
     # Print examples
-    print(f"\n📝 EXAMPLES:")
+    print(f"\nEXAMPLES:")
     for behavior, example_list in examples.items():
         if example_list:
             print(f"\n{behavior.replace('_', ' ').title()}:")
@@ -165,7 +165,7 @@ def classify_by_alpha_ranges(jsonl_file: str, max_per_range: int = 20):
     Classify fruitnotsnow responses by different alpha ranges to see how 
     amplification affects fruit refusal behavior.
     """
-    print(f"🔍 Analyzing fruit refusal behavior across alpha ranges")
+    print(f"Analyzing fruit refusal behavior across alpha ranges")
     
     alpha_data = extract_by_alpha_ranges(jsonl_file)
     
@@ -189,7 +189,7 @@ def classify_by_alpha_ranges(jsonl_file: str, max_per_range: int = 20):
                 'stats': stats
             }
         except Exception as e:
-            print(f"❌ Failed to classify {range_name}: {e}")
+            print(f"Failed to classify {range_name}: {e}")
             all_results[range_name] = {'error': str(e)}
     
     # Save comprehensive results
@@ -197,7 +197,7 @@ def classify_by_alpha_ranges(jsonl_file: str, max_per_range: int = 20):
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
     
-    print(f"\n💾 Comprehensive results saved to {output_file}")
+    print(f"\nComprehensive results saved to {output_file}")
     
     return all_results
 
@@ -213,7 +213,7 @@ if __name__ == "__main__":
     jsonl_file = sys.argv[1]
     
     if not Path(jsonl_file).exists():
-        print(f"❌ File not found: {jsonl_file}")
+        print(f"File not found: {jsonl_file}")
         sys.exit(1)
     
     if len(sys.argv) > 2 and sys.argv[2] == "--alpha-ranges":

@@ -2,6 +2,8 @@
 
 ![Logit Amplification](repo-cover.png)
 
+## 📄 [**Read the Full Research Paper (PDF)**](https://sergioahp.github.io/logit-amplification/)
+
 > This project was developed during a trial phase with
 > [SPAR (Supervised Program for Alignment Research)](https://sparai.org),
 > a research fellowship connecting aspiring AI safety researchers with expert
